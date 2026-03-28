@@ -1,27 +1,23 @@
-/** PDF 텍스트 추출 (pdfjs-dist 기반 서버사이드 파싱) */
+/**
+ * PDF 텍스트 추출 (pdfjs-dist static import 기반)
+ *
+ * polyfill을 먼저 import해야 DOMMatrix/Path2D/pdfjsWorker가 주입됨.
+ * ES 모듈 호이스팅 때문에 별도 파일로 분리되어 있음.
+ */
 
 import type { ParseResult } from "../types.js"
 import { KordocError } from "../utils.js"
+// polyfill 먼저 (ES 모듈 호이스팅되므로 별도 파일 필수)
+import "./polyfill.js"
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs"
+
+// worker 비활성화 (polyfill에서 pdfjsWorker를 이미 주입했으므로)
+GlobalWorkerOptions.workerSrc = ""
 
 const MAX_PAGES = 5000
 const MAX_TOTAL_TEXT = 100 * 1024 * 1024
 
-import { createRequire } from "module"
-import { pathToFileURL } from "url"
-
-interface PdfjsModule {
-  getDocument: (opts: Record<string, unknown>) => { promise: Promise<PdfjsDocument> }
-  GlobalWorkerOptions: { workerSrc: string }
-}
-interface PdfjsDocument {
-  numPages: number
-  getPage: (n: number) => Promise<PdfjsPage>
-  destroy: () => Promise<void>
-}
-interface PdfjsPage {
-  getTextContent: () => Promise<{ items: PdfjsTextItem[] }>
-}
-interface PdfjsTextItem {
+interface PdfTextItem {
   str: string
   transform: number[]
   width: number
@@ -36,31 +32,8 @@ interface NormItem {
   h: number
 }
 
-let pdfjsModule: PdfjsModule | null = null
-
-async function loadPdfjs(): Promise<PdfjsModule | null> {
-  if (pdfjsModule) return pdfjsModule
-  try {
-    const mod = await import("pdfjs-dist/legacy/build/pdf.mjs") as unknown as PdfjsModule
-    const req = createRequire(import.meta.url)
-    const workerPath = req.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")
-    mod.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href
-    pdfjsModule = mod
-    return mod
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes("Cannot find") || msg.includes("MODULE_NOT_FOUND")) return null
-    throw new KordocError(`pdfjs-dist 로딩 실패: ${msg}`)
-  }
-}
-
 export async function parsePdfDocument(buffer: ArrayBuffer): Promise<ParseResult> {
-  const pdfjs = await loadPdfjs()
-  if (!pdfjs) {
-    return { success: false, fileType: "pdf", pageCount: 0, error: "pdfjs-dist가 설치되지 않았습니다. npm install pdfjs-dist" }
-  }
-
-  const doc = await pdfjs.getDocument({
+  const doc = await getDocument({
     data: new Uint8Array(buffer),
     useSystemFonts: true,
     disableFontFace: true,
@@ -79,7 +52,7 @@ export async function parsePdfDocument(buffer: ArrayBuffer): Promise<ParseResult
     for (let i = 1; i <= effectivePageCount; i++) {
       const page = await doc.getPage(i)
       const tc = await page.getTextContent()
-      const pageText = extractPageContent(tc.items)
+      const pageText = extractPageContent(tc.items as PdfTextItem[])
       totalChars += pageText.replace(/\s/g, "").length
       totalTextBytes += pageText.length * 2
       if (totalTextBytes > MAX_TOTAL_TEXT) throw new KordocError("텍스트 추출 크기 초과")
@@ -103,7 +76,7 @@ export async function parsePdfDocument(buffer: ArrayBuffer): Promise<ParseResult
 // 페이지 콘텐츠 추출 (열 경계 학습 기반 테이블 감지)
 // ═══════════════════════════════════════════════════════
 
-function extractPageContent(rawItems: PdfjsTextItem[]): string {
+function extractPageContent(rawItems: PdfTextItem[]): string {
   const items = normalizeItems(rawItems)
   if (items.length === 0) return ""
 
@@ -118,7 +91,7 @@ function extractPageContent(rawItems: PdfjsTextItem[]): string {
   return yLines.map(line => mergeLineSimple(line)).join("\n")
 }
 
-function normalizeItems(rawItems: PdfjsTextItem[]): NormItem[] {
+function normalizeItems(rawItems: PdfTextItem[]): NormItem[] {
   return rawItems
     .filter(i => typeof i.str === "string" && i.str.trim() !== "")
     .map(i => ({

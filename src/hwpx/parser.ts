@@ -8,8 +8,9 @@ import JSZip from "jszip"
 import { inflateRawSync } from "zlib"
 import { DOMParser } from "@xmldom/xmldom"
 import { buildTable, convertTableToText, blocksToMarkdown, MAX_COLS, MAX_ROWS } from "../table/builder.js"
-import type { CellContext, IRBlock } from "../types.js"
+import type { CellContext, IRBlock, DocumentMetadata, InternalParseResult, ParseOptions } from "../types.js"
 import { KordocError, isPathTraversal } from "../utils.js"
+import { parsePageRange } from "../page-range.js"
 
 /** 압축 해제 최대 크기 (100MB) — ZIP bomb 방지 */
 const MAX_DECOMPRESS_SIZE = 100 * 1024 * 1024
@@ -28,7 +29,7 @@ function stripDtd(xml: string): string {
   return xml.replace(/<!DOCTYPE\s[^[>]*(\[[\s\S]*?\])?\s*>/gi, "")
 }
 
-export async function parseHwpxDocument(buffer: ArrayBuffer): Promise<string> {
+export async function parseHwpxDocument(buffer: ArrayBuffer, options?: ParseOptions): Promise<InternalParseResult> {
   // Best-effort 사전 검증 — CD 선언 크기 기반 (위조 가능, 실제 방어는 per-file 누적 체크)
   const precheck = precheckZipSize(buffer)
   if (precheck.totalUncompressed > MAX_DECOMPRESS_SIZE) {
@@ -52,20 +53,101 @@ export async function parseHwpxDocument(buffer: ArrayBuffer): Promise<string> {
     throw new KordocError("ZIP 엔트리 수 초과 (ZIP bomb 의심)")
   }
 
+  // 메타데이터 추출 (best-effort)
+  const metadata: DocumentMetadata = {}
+  await extractHwpxMetadata(zip, metadata)
+
   const sectionPaths = await resolveSectionPaths(zip)
   if (sectionPaths.length === 0) throw new KordocError("HWPX에서 섹션 파일을 찾을 수 없습니다")
 
+  metadata.pageCount = sectionPaths.length
+
+  // 페이지 범위 필터링 (섹션 단위 근사치)
+  const pageFilter = options?.pages ? parsePageRange(options.pages, sectionPaths.length) : null
+
   let totalDecompressed = 0
   const blocks: IRBlock[] = []
-  for (const path of sectionPaths) {
-    const file = zip.file(path)
+  for (let si = 0; si < sectionPaths.length; si++) {
+    if (pageFilter && !pageFilter.has(si + 1)) continue
+    const file = zip.file(sectionPaths[si])
     if (!file) continue
     const xml = await file.async("text")
     totalDecompressed += xml.length * 2
     if (totalDecompressed > MAX_DECOMPRESS_SIZE) throw new KordocError("ZIP 압축 해제 크기 초과 (ZIP bomb 의심)")
     blocks.push(...parseSectionXml(xml))
   }
-  return blocksToMarkdown(blocks)
+
+  const markdown = blocksToMarkdown(blocks)
+  return { markdown, blocks, metadata }
+}
+
+// ─── 메타데이터 추출 (best-effort) ───────────────────
+
+/**
+ * HWPX ZIP 내 메타데이터 파일에서 Dublin Core 정보 추출.
+ * 표준 경로: meta.xml, docProps/core.xml, META-INF/container.xml
+ */
+async function extractHwpxMetadata(zip: JSZip, metadata: DocumentMetadata): Promise<void> {
+  try {
+    // meta.xml (HWPX 표준) 또는 docProps/core.xml (OOXML 호환)
+    const metaPaths = ["meta.xml", "META-INF/meta.xml", "docProps/core.xml"]
+    for (const mp of metaPaths) {
+      const file = zip.file(mp) || Object.values(zip.files).find(f => f.name.toLowerCase() === mp.toLowerCase()) || null
+      if (!file) continue
+      const xml = await file.async("text")
+      parseDublinCoreMetadata(xml, metadata)
+      if (metadata.title || metadata.author) return
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+/** Dublin Core (dc:) 메타데이터 XML 파싱 */
+function parseDublinCoreMetadata(xml: string, metadata: DocumentMetadata): void {
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(stripDtd(xml), "text/xml")
+  if (!doc.documentElement) return
+
+  const getText = (tagNames: string[]): string | undefined => {
+    for (const tag of tagNames) {
+      const els = doc.getElementsByTagName(tag)
+      if (els.length > 0) {
+        const text = els[0].textContent?.trim()
+        if (text) return text
+      }
+    }
+    return undefined
+  }
+
+  metadata.title = metadata.title || getText(["dc:title", "title"])
+  metadata.author = metadata.author || getText(["dc:creator", "creator", "cp:lastModifiedBy"])
+  metadata.description = metadata.description || getText(["dc:description", "description", "dc:subject", "subject"])
+  metadata.createdAt = metadata.createdAt || getText(["dcterms:created", "meta:creation-date"])
+  metadata.modifiedAt = metadata.modifiedAt || getText(["dcterms:modified", "meta:date"])
+
+  const keywords = getText(["dc:keyword", "cp:keywords", "meta:keyword"])
+  if (keywords && !metadata.keywords) {
+    metadata.keywords = keywords.split(/[,;]/).map(k => k.trim()).filter(Boolean)
+  }
+}
+
+/** 메타데이터만 추출 (전체 파싱 없이) — MCP parse_metadata용 */
+export async function extractHwpxMetadataOnly(buffer: ArrayBuffer): Promise<DocumentMetadata> {
+  let zip: JSZip
+  try {
+    zip = await JSZip.loadAsync(buffer)
+  } catch {
+    throw new KordocError("HWPX ZIP을 열 수 없습니다")
+  }
+
+  const metadata: DocumentMetadata = {}
+  await extractHwpxMetadata(zip, metadata)
+
+  const sectionPaths = await resolveSectionPaths(zip)
+  metadata.pageCount = sectionPaths.length
+
+  return metadata
 }
 
 /**
@@ -123,11 +205,11 @@ export function precheckZipSize(buffer: ArrayBuffer): { totalUncompressed: numbe
 
 // ─── 손상 ZIP 복구 (edu-facility-ai에서 포팅) ──────────
 
-function extractFromBrokenZip(buffer: ArrayBuffer): string {
+function extractFromBrokenZip(buffer: ArrayBuffer): InternalParseResult {
   const data = new Uint8Array(buffer)
   const view = new DataView(buffer)
   let pos = 0
-  const texts: string[] = []
+  const blocks: IRBlock[] = []
   let totalDecompressed = 0
   let entryCount = 0
 
@@ -172,15 +254,15 @@ function extractFromBrokenZip(buffer: ArrayBuffer): string {
       }
       totalDecompressed += content.length * 2
       if (totalDecompressed > MAX_DECOMPRESS_SIZE) throw new KordocError("압축 해제 크기 초과")
-      const sectionText = blocksToMarkdown(parseSectionXml(content))
-      if (sectionText) texts.push(sectionText)
+      blocks.push(...parseSectionXml(content))
     } catch {
       continue
     }
   }
 
-  if (texts.length === 0) throw new KordocError("손상된 HWPX에서 섹션 데이터를 복구할 수 없습니다")
-  return texts.join("\n\n")
+  if (blocks.length === 0) throw new KordocError("손상된 HWPX에서 섹션 데이터를 복구할 수 없습니다")
+  const markdown = blocksToMarkdown(blocks)
+  return { markdown, blocks }
 }
 
 // ─── Manifest 해석 ───────────────────────────────────

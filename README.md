@@ -1,12 +1,12 @@
 # kordoc
 
-**모두 파싱해버리겠다** — Parse any Korean document to Markdown.
+**모두 파싱해버리겠다** — The Korean Document Platform.
 
 [![npm version](https://img.shields.io/npm/v/kordoc.svg)](https://www.npmjs.com/package/kordoc)
 [![license](https://img.shields.io/npm/l/kordoc.svg)](https://github.com/chrisryugj/kordoc/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/kordoc.svg)](https://nodejs.org)
 
-> *HWP, HWPX, PDF — 대한민국 문서라면 남김없이 파싱해버립니다.*
+> *Parse, compare, extract, and generate Korean documents. HWP, HWPX, PDF — all of them.*
 
 [한국어](./README-KR.md)
 
@@ -14,46 +14,40 @@
 
 ---
 
-## Why kordoc?
+## What's New in v1.4.0
 
-South Korea's government runs on **HWP** — a proprietary word processor the rest of the world has never heard of. Every day, 243 local governments and thousands of public institutions produce mountains of `.hwp` files. Extracting text from them has always been a nightmare: COM automation that only works on Windows, proprietary binary formats with zero documentation, and tables that break every existing parser.
-
-**kordoc** was born from that document hell. Built by a Korean civil servant who spent **7 years** buried under HWP files at a district office. One day he snapped — and decided to parse them all. Its parsers have been battle-tested across 5 real government projects, processing school curriculum plans, facility inspection reports, legal annexes, and municipal newsletters. If a Korean public servant wrote it, kordoc can parse it.
+- **Document Compare** — Diff two documents at IR level. Cross-format (HWP vs HWPX) supported.
+- **Form Field Recognition** — Extract label-value pairs from government forms automatically.
+- **Structured Parsing** — Access `IRBlock[]` and `DocumentMetadata` directly, not just markdown.
+- **Page Range Parsing** — Parse only pages 1-3: `parse(buffer, { pages: "1-3" })`.
+- **Markdown to HWPX** — Reverse conversion. Generate valid HWPX files from markdown.
+- **OCR Integration** — Pluggable OCR for image-based PDFs (bring your own provider).
+- **Watch Mode** — `kordoc watch ./incoming --webhook https://...` for auto-conversion.
+- **7 MCP Tools** — parse_document, detect_format, parse_metadata, parse_pages, parse_table, compare_documents, parse_form.
+- **Error Codes** — Structured `code` field: `"ENCRYPTED"`, `"ZIP_BOMB"`, `"IMAGE_BASED_PDF"`, etc.
 
 ---
 
-## Features
+## Why kordoc?
 
-- **HWP 5.x Binary Parsing** — OLE2 container + record stream + UTF-16LE. No Hancom Office needed.
-- **HWPX ZIP Parsing** — OPF manifest resolution, multi-section, nested tables.
-- **PDF Text Extraction** — Y-coordinate line grouping, table reconstruction, image PDF detection.
-- **2-Pass Table Builder** — Correct `colSpan`/`rowSpan` via grid algorithm. No broken tables.
-- **Broken ZIP Recovery** — Corrupted HWPX? Scans raw Local File Headers.
-- **3 Interfaces** — npm library, CLI tool, and MCP server (Claude/Cursor).
-- **Cross-Platform** — Pure JavaScript. Runs on Linux, macOS, Windows.
+South Korea's government runs on **HWP** — a proprietary word processor the rest of the world has never heard of. Every day, 243 local governments and thousands of public institutions produce mountains of `.hwp` files. Extracting text from them has always been a nightmare.
 
-## Supported Formats
+**kordoc** was born from that document hell. Built by a Korean civil servant who spent **7 years** buried under HWP files. Battle-tested across 5 real government projects. If a Korean public servant wrote it, kordoc can parse it.
 
-| Format | Engine | Features |
-|--------|--------|----------|
-| **HWPX** (한컴 2020+) | ZIP + XML DOM | Manifest, nested tables, merged cells, broken ZIP recovery |
-| **HWP 5.x** (한컴 레거시) | OLE2 + CFB | 21 control chars, zlib decompression, DRM detection |
-| **PDF** | pdfjs-dist | Line grouping, table detection, image PDF warning |
+---
 
 ## Installation
 
 ```bash
 npm install kordoc
 
-# PDF support requires pdfjs-dist (optional peer dependency)
+# PDF support (optional)
 npm install pdfjs-dist
 ```
 
-> `pdfjs-dist` is an optional peer dependency. Not needed for HWP/HWPX parsing.
+## Quick Start
 
-## Usage
-
-### As a Library
+### Parse Any Document
 
 ```typescript
 import { parse } from "kordoc"
@@ -63,40 +57,76 @@ const buffer = readFileSync("document.hwpx")
 const result = await parse(buffer.buffer)
 
 if (result.success) {
-  console.log(result.markdown)
+  console.log(result.markdown)       // Markdown text
+  console.log(result.blocks)         // IRBlock[] structured data
+  console.log(result.metadata)       // { title, author, createdAt, ... }
 }
 ```
 
-#### Format-Specific
+### Compare Two Documents
 
 ```typescript
-import { parseHwpx, parseHwp, parsePdf } from "kordoc"
+import { compare } from "kordoc"
 
-const hwpxResult = await parseHwpx(buffer)   // HWPX
-const hwpResult  = await parseHwp(buffer)    // HWP 5.x
-const pdfResult  = await parsePdf(buffer)    // PDF
+const diff = await compare(bufferA, bufferB)
+// diff.stats → { added: 3, removed: 1, modified: 5, unchanged: 42 }
+// diff.diffs → BlockDiff[] with cell-level table diffs
 ```
 
-#### Format Detection
+Cross-format supported: compare HWP against HWPX of the same document.
+
+### Extract Form Fields
 
 ```typescript
-import { detectFormat } from "kordoc"
+import { parse, extractFormFields } from "kordoc"
 
-detectFormat(buffer) // → "hwpx" | "hwp" | "pdf" | "unknown"
+const result = await parse(buffer)
+if (result.success) {
+  const form = extractFormFields(result.blocks)
+  // form.fields → [{ label: "성명", value: "홍길동", row: 0, col: 0 }, ...]
+  // form.confidence → 0.85
+}
 ```
 
-### As a CLI
+### Generate HWPX from Markdown
+
+```typescript
+import { markdownToHwpx } from "kordoc"
+
+const hwpxBuffer = await markdownToHwpx("# Title\n\nParagraph text\n\n| A | B |\n| --- | --- |\n| 1 | 2 |")
+writeFileSync("output.hwpx", Buffer.from(hwpxBuffer))
+```
+
+### Parse Specific Pages
+
+```typescript
+const result = await parse(buffer, { pages: "1-3" })     // pages 1-3 only
+const result = await parse(buffer, { pages: [1, 5, 10] }) // specific pages
+```
+
+### OCR for Image-Based PDFs
+
+```typescript
+const result = await parse(buffer, {
+  ocr: async (pageImage, pageNumber, mimeType) => {
+    return await myOcrService.recognize(pageImage) // Tesseract, Claude Vision, etc.
+  }
+})
+```
+
+## CLI
 
 ```bash
-npx kordoc document.hwpx                    # stdout
-npx kordoc document.hwp -o output.md        # save to file
-npx kordoc *.pdf -d ./converted/            # batch convert
-npx kordoc report.hwpx --format json        # JSON with metadata
+npx kordoc document.hwpx                          # stdout
+npx kordoc document.hwp -o output.md              # save to file
+npx kordoc *.pdf -d ./converted/                  # batch convert
+npx kordoc report.hwpx --format json              # JSON with blocks + metadata
+npx kordoc report.hwpx --pages 1-3                # page range
+npx kordoc watch ./incoming -d ./output            # watch mode
+npx kordoc watch ./docs --webhook https://api/hook # webhook notification
 ```
 
-### As an MCP Server
-
-Works with **Claude Desktop**, **Cursor**, **Windsurf**, and any MCP-compatible client.
+## MCP Server (Claude / Cursor / Windsurf)
 
 ```json
 {
@@ -109,104 +139,67 @@ Works with **Claude Desktop**, **Cursor**, **Windsurf**, and any MCP-compatible 
 }
 ```
 
-**Tools exposed:**
+**7 Tools:**
 
 | Tool | Description |
 |------|-------------|
-| `parse_document` | Parse HWP/HWPX/PDF file → Markdown |
+| `parse_document` | Parse HWP/HWPX/PDF → Markdown with metadata |
 | `detect_format` | Detect file format via magic bytes |
+| `parse_metadata` | Extract metadata only (fast, no full parse) |
+| `parse_pages` | Parse specific page range |
+| `parse_table` | Extract Nth table from document |
+| `compare_documents` | Diff two documents (cross-format) |
+| `parse_form` | Extract form fields as structured JSON |
 
 ## API Reference
 
-### `parse(buffer: ArrayBuffer): Promise<ParseResult>`
+### Core
 
-Auto-detects format and converts to Markdown.
+| Function | Description |
+|----------|-------------|
+| `parse(buffer, options?)` | Auto-detect format, parse to Markdown + IRBlock[] |
+| `parseHwpx(buffer, options?)` | HWPX only |
+| `parseHwp(buffer, options?)` | HWP 5.x only |
+| `parsePdf(buffer, options?)` | PDF only |
+| `detectFormat(buffer)` | Returns `"hwpx" \| "hwp" \| "pdf" \| "unknown"` |
 
-```typescript
-interface ParseResult {
-  success: boolean
-  markdown?: string
-  fileType: "hwpx" | "hwp" | "pdf" | "unknown"
-  isImageBased?: boolean     // scanned PDF detection
-  pageCount?: number         // PDF only
-  error?: string
-}
-```
+### Advanced
+
+| Function | Description |
+|----------|-------------|
+| `compare(bufferA, bufferB, options?)` | Document diff at IR level |
+| `extractFormFields(blocks)` | Form field recognition from IRBlock[] |
+| `markdownToHwpx(markdown)` | Markdown → HWPX reverse conversion |
+| `blocksToMarkdown(blocks)` | IRBlock[] → Markdown string |
 
 ### Types
 
 ```typescript
-import type { ParseResult, ParseSuccess, ParseFailure, FileType } from "kordoc"
+import type {
+  ParseResult, ParseSuccess, ParseFailure, FileType,
+  IRBlock, IRTable, IRCell, CellContext,
+  DocumentMetadata, ParseOptions, ErrorCode,
+  DiffResult, BlockDiff, CellDiff, DiffChangeType,
+  FormField, FormResult,
+  OcrProvider, WatchOptions,
+} from "kordoc"
 ```
 
-> Internal types (`IRBlock`, `IRTable`, `IRCell`, `CellContext`) and utilities (`KordocError`, `sanitizeError`, `isPathTraversal`, `buildTable`, `blocksToMarkdown`) are not part of the public API.
+## Supported Formats
 
-## Requirements
-
-- **Node.js** >= 18
-- **pdfjs-dist** >= 4.0.0 — Optional. Only needed for PDF. HWP/HWPX work without it.
+| Format | Engine | Features |
+|--------|--------|----------|
+| **HWPX** (한컴 2020+) | ZIP + XML DOM | Manifest, nested tables, merged cells, broken ZIP recovery |
+| **HWP 5.x** (한컴 Legacy) | OLE2 + CFB | 21 control chars, zlib decompression, DRM detection |
+| **PDF** | pdfjs-dist | Line grouping, table detection, image PDF + OCR |
 
 ## Security
 
-Production-grade security hardening:
-
-- **ZIP bomb protection** — Entry count validation, 100MB decompression limit, 500 entry cap
-  > **Known limitation:** Pre-check reads declared sizes from ZIP Central Directory, which an attacker can falsify. The primary defense is per-file cumulative size tracking during actual decompression. For fully untrusted input where streaming decompression is required, consider wrapping kordoc behind a size-limited sandbox.
-- **XXE/Billion Laughs prevention** — Internal DTD subsets fully stripped from HWPX XML
-- **Decompression bomb guard** — `maxOutputLength` on HWP5 zlib streams, cumulative 100MB limit across sections
-- **PDF resource limits** — MAX_PAGES=5,000, cumulative text size 100MB cap, `doc.destroy()` cleanup
-- **HWP5 record cap** — Max 500,000 records per section, prevents memory exhaustion from crafted files
-- **Table dimension clamping** — rows/cols read from HWP5 binary clamped to MAX_ROWS/MAX_COLS before allocation
-- **colSpan/rowSpan clamping** — Crafted merge values clamped to grid bounds (MAX_COLS=200, MAX_ROWS=10,000)
-- **Path traversal guard** — Backslash normalization, `..`, absolute paths, Windows drive letters all rejected
-- **MCP error sanitization** — Allowlist-based error filtering, unknown errors return generic message
-- **MCP path restriction** — Only `.hwp`, `.hwpx`, `.pdf` extensions allowed, symlink resolution
-- **File size limit** — 500MB max in MCP server and CLI
-- **HWP5 section limit** — Max 100 sections in both primary and fallback paths
-- **HWP5 control char fix** — Character code 10 (footnote/endnote) now correctly handled
-
-## How It Works
-
-```
-┌─────────────┐     Magic Bytes      ┌──────────────────┐
-│  File Input  │ ──── Detection ────→ │  Format Router   │
-└─────────────┘                       └────────┬─────────┘
-                                               │
-                    ┌──────────────────────────┼──────────────────────────┐
-                    │                          │                          │
-              ┌─────▼─────┐            ┌───────▼───────┐          ┌──────▼──────┐
-              │   HWPX    │            │    HWP 5.x    │          │     PDF     │
-              │  ZIP+XML  │            │  OLE2+Record  │          │  pdfjs-dist │
-              └─────┬─────┘            └───────┬───────┘          └──────┬──────┘
-                    │                          │                          │
-                    │       ┌──────────────────┤                          │
-                    │       │                  ��                          │
-              ┌─────▼───────▼─────┐            │                          │
-              │  2-Pass Table     │            │                          │
-              │  Builder (Grid)   │            │                          │
-              └─────────┬─────────┘            │                          │
-                        │                      │                          │
-                  ┌─────▼──────────────────────▼──────────────────────────▼─────┐
-                  │                      IRBlock[]                              │
-                  │              (Intermediate Representation)                  │
-                  └────────────────────────┬───────────────────────────────────┘
-                                           │
-                                    ┌──────▼──────┐
-                                    │  Markdown   │
-                                    │   Output    │
-                                    └─────────────┘
-```
+Production-grade hardening: ZIP bomb protection, XXE/Billion Laughs prevention, decompression bomb guard, path traversal guard, MCP error sanitization, file size limits (500MB). See [SECURITY.md](./SECURITY.md) for details.
 
 ## Credits
 
-Production-tested across 5 Korean government technology projects:
-- School curriculum plans (학교교육과정)
-- Facility inspection reports (사전기획 보고서)
-- Legal document annexes (법률 별표)
-- Municipal newsletters (소식지)
-- Public data extraction tools (공공데이터)
-
-Thousands of real government documents parsed without breaking a sweat.
+Production-tested across 5 Korean government projects: school curriculum plans, facility inspection reports, legal document annexes, municipal newsletters, and public data extraction tools. Thousands of real government documents parsed.
 
 ## License
 

@@ -44,3 +44,21 @@ export function isPathTraversal(name: string): boolean {
   const normalized = name.replace(/\\/g, "/")
   return normalized.includes("..") || normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)
 }
+
+// ─── 에러 분류 ──────────────────────────────────────
+
+import type { ErrorCode } from "./types.js"
+
+/** 에러를 구조화된 ErrorCode로 분류 — KordocError 메시지 패턴 매칭 */
+export function classifyError(err: unknown): ErrorCode {
+  if (!(err instanceof Error)) return "PARSE_ERROR"
+  const msg = err.message
+  if (msg.includes("암호화")) return "ENCRYPTED"
+  if (msg.includes("DRM")) return "DRM_PROTECTED"
+  if (msg.includes("ZIP bomb") || msg.includes("ZIP 비압축 크기 초과") || msg.includes("ZIP 엔트리 수 초과")) return "ZIP_BOMB"
+  if (msg.includes("bomb") || msg.includes("크기 초과") || msg.includes("압축 해제")) return "DECOMPRESSION_BOMB"
+  if (msg.includes("이미지 기반")) return "IMAGE_BASED_PDF"
+  if (msg.includes("섹션") && (msg.includes("찾을 수 없") || msg.includes("없음"))) return "NO_SECTIONS"
+  if (msg.includes("시그니처") || msg.includes("복구할 수 없")) return "CORRUPTED"
+  return "PARSE_ERROR"
+}

@@ -7,8 +7,9 @@ import {
   type HwpRecord,
 } from "./record.js"
 import { buildTable, blocksToMarkdown, MAX_COLS, MAX_ROWS } from "../table/builder.js"
-import type { CellContext, IRBlock } from "../types.js"
+import type { CellContext, IRBlock, DocumentMetadata, InternalParseResult, ParseOptions } from "../types.js"
 import { KordocError } from "../utils.js"
+import { parsePageRange } from "../page-range.js"
 
 import { createRequire } from "module"
 const require = createRequire(import.meta.url)
@@ -26,7 +27,7 @@ const MAX_SECTIONS = 100
 /** 누적 압축 해제 최대 크기 (100MB) */
 const MAX_TOTAL_DECOMPRESS = 100 * 1024 * 1024
 
-export function parseHwp5Document(buffer: Buffer): string {
+export function parseHwp5Document(buffer: Buffer, options?: ParseOptions): InternalParseResult {
   const cfb = CFB.parse(buffer)
 
   const headerEntry = CFB.find(cfb, "/FileHeader")
@@ -37,12 +38,24 @@ export function parseHwp5Document(buffer: Buffer): string {
   if (header.flags & FLAG_DRM) throw new KordocError("DRM 보호된 HWP는 지원하지 않습니다")
   const compressed = (header.flags & FLAG_COMPRESSED) !== 0
 
+  const metadata: DocumentMetadata = {
+    version: `${header.versionMajor}.x`,
+  }
+  extractHwp5Metadata(cfb, metadata)
+
   const sections = findSections(cfb)
   if (sections.length === 0) throw new KordocError("섹션 스트림을 찾을 수 없습니다")
 
+  metadata.pageCount = sections.length
+
+  // 페이지 범위 필터링 (섹션 단위 근사치)
+  const pageFilter = options?.pages ? parsePageRange(options.pages, sections.length) : null
+
   const blocks: IRBlock[] = []
   let totalDecompressed = 0
-  for (const sectionData of sections) {
+  for (let si = 0; si < sections.length; si++) {
+    if (pageFilter && !pageFilter.has(si + 1)) continue
+    const sectionData = sections[si]
     const data = compressed ? decompressStream(Buffer.from(sectionData)) : Buffer.from(sectionData)
     totalDecompressed += data.length
     if (totalDecompressed > MAX_TOTAL_DECOMPRESS) throw new KordocError("총 압축 해제 크기 초과 (decompression bomb 의심)")
@@ -50,7 +63,87 @@ export function parseHwp5Document(buffer: Buffer): string {
     blocks.push(...parseSection(records))
   }
 
-  return blocksToMarkdown(blocks)
+  const markdown = blocksToMarkdown(blocks)
+  return { markdown, blocks, metadata }
+}
+
+// ─── 메타데이터 추출 (best-effort) ───────────────────
+
+/**
+ * OLE2 SummaryInformation 스트림에서 제목/작성자 추출.
+ * HWP5는 \005HwpSummaryInformation 또는 \005SummaryInformation에 저장.
+ * OLE2 Property Set 포맷의 간이 파싱 — 실패 시 조용히 무시.
+ */
+function extractHwp5Metadata(cfb: CfbContainer, metadata: DocumentMetadata): void {
+  try {
+    // HWP 전용 SummaryInformation 먼저, 없으면 표준 OLE2
+    const summaryEntry =
+      CFB.find(cfb, "/\x05HwpSummaryInformation") ||
+      CFB.find(cfb, "/\x05SummaryInformation")
+    if (!summaryEntry?.content) return
+
+    const data = Buffer.from(summaryEntry.content)
+    if (data.length < 48) return
+
+    // OLE2 Property Set Header: byte order(2) + version(2) + OS(4) + CLSID(16) + numSets(4) = 28
+    // Then FMTID(16) + offset(4)
+    const numSets = data.readUInt32LE(24)
+    if (numSets === 0) return
+
+    const setOffset = data.readUInt32LE(44)
+    if (setOffset >= data.length - 8) return
+
+    // Property Set: size(4) + numProperties(4) + [propertyId(4) + offset(4)] * N
+    const numProps = data.readUInt32LE(setOffset + 4)
+    if (numProps === 0 || numProps > 100) return
+
+    for (let i = 0; i < numProps; i++) {
+      const entryOffset = setOffset + 8 + i * 8
+      if (entryOffset + 8 > data.length) break
+
+      const propId = data.readUInt32LE(entryOffset)
+      const propOffset = setOffset + data.readUInt32LE(entryOffset + 4)
+      if (propOffset + 8 > data.length) continue
+
+      // Property ID: 2=Title, 4=Author, 6=Subject/Description
+      if (propId !== 2 && propId !== 4 && propId !== 6) continue
+
+      const propType = data.readUInt32LE(propOffset)
+      // Type 0x1E = VT_LPSTR (ANSI string)
+      if (propType !== 0x1e) continue
+
+      const strLen = data.readUInt32LE(propOffset + 4)
+      if (strLen === 0 || strLen > 10000 || propOffset + 8 + strLen > data.length) continue
+
+      const str = data.subarray(propOffset + 8, propOffset + 8 + strLen).toString("utf8").replace(/\0+$/, "").trim()
+      if (!str) continue
+
+      if (propId === 2) metadata.title = str
+      else if (propId === 4) metadata.author = str
+      else if (propId === 6) metadata.description = str
+    }
+  } catch {
+    // best-effort — 실패 시 조용히 무시
+  }
+}
+
+/** 메타데이터만 추출 (전체 파싱 없이) — MCP parse_metadata용 */
+export function extractHwp5MetadataOnly(buffer: Buffer): DocumentMetadata {
+  const cfb = CFB.parse(buffer)
+  const headerEntry = CFB.find(cfb, "/FileHeader")
+  if (!headerEntry?.content) throw new KordocError("FileHeader 스트림 없음")
+  const header = parseFileHeader(Buffer.from(headerEntry.content))
+  if (header.signature !== "HWP Document File") throw new KordocError("HWP 시그니처 불일치")
+
+  const metadata: DocumentMetadata = {
+    version: `${header.versionMajor}.x`,
+  }
+  extractHwp5Metadata(cfb, metadata)
+
+  const sections = findSections(cfb)
+  metadata.pageCount = sections.length
+
+  return metadata
 }
 
 function findSections(cfb: CfbContainer): Buffer[] {

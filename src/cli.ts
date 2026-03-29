@@ -15,6 +15,7 @@ program
   .argument("<files...>", "변환할 파일 경로 (HWP, HWPX, PDF)")
   .option("-o, --output <path>", "출력 파일 경로 (단일 파일 시)")
   .option("-d, --out-dir <dir>", "출력 디렉토리 (다중 파일 시)")
+  .option("-p, --pages <range>", "페이지/섹션 범위 (예: 1-3, 1,3,5)")
   .option("--format <type>", "출력 형식: markdown (기본) 또는 json", "markdown")
   .option("--silent", "진행 메시지 숨기기")
   .action(async (files: string[], opts) => {
@@ -37,7 +38,8 @@ program
           process.stderr.write(`[kordoc] ${fileName} (${format}) ...`)
         }
 
-        const result = await parse(arrayBuffer)
+        const parseOptions = opts.pages ? { pages: opts.pages as string } : undefined
+        const result = await parse(arrayBuffer, parseOptions)
 
         if (!result.success) {
           process.stderr.write(` FAIL\n`)
@@ -69,6 +71,26 @@ program
         process.exitCode = 1
       }
     }
+  })
+
+program
+  .command("watch <dir>")
+  .description("디렉토리 감시 — 새 문서 자동 변환")
+  .option("--webhook <url>", "결과 전송 웹훅 URL")
+  .option("-d, --out-dir <dir>", "변환 결과 출력 디렉토리")
+  .option("-p, --pages <range>", "페이지/섹션 범위")
+  .option("--format <type>", "출력 형식: markdown 또는 json", "markdown")
+  .option("--silent", "진행 메시지 숨기기")
+  .action(async (dir: string, opts) => {
+    const { watchDirectory } = await import("./watch.js")
+    await watchDirectory({
+      dir,
+      outDir: opts.outDir,
+      webhook: opts.webhook,
+      format: opts.format,
+      pages: opts.pages,
+      silent: opts.silent,
+    })
   })
 
 program.parse()

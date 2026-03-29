@@ -78,6 +78,8 @@ describe("합성 HWPX: 전체 파이프라인", () => {
     assert.equal(result.fileType, "hwpx")
     if (result.success) {
       assert.equal(result.markdown.trim(), "대한민국 헌법 제1조")
+      assert.ok(Array.isArray(result.blocks), "blocks 배열 존재")
+      assert.ok(result.blocks.length >= 1, "최소 1개 블록")
     }
   })
 

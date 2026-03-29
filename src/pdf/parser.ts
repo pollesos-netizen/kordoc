@@ -5,8 +5,9 @@
  * ES 모듈 호이스팅 때문에 별도 파일로 분리되어 있음.
  */
 
-import type { ParseResult } from "../types.js"
+import type { ParseResult, IRBlock, DocumentMetadata, ParseOptions } from "../types.js"
 import { KordocError } from "../utils.js"
+import { parsePageRange } from "../page-range.js"
 // polyfill 먼저 (ES 모듈 호이스팅되므로 별도 파일 필수)
 import "./polyfill.js"
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs"
@@ -14,8 +15,9 @@ import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mj
 // worker 비활성화 (polyfill에서 pdfjsWorker를 이미 주입했으므로)
 GlobalWorkerOptions.workerSrc = ""
 
+// ─── 안전 한계값 (구조적 파싱과 무관) ────────────────
 const MAX_PAGES = 5000
-const MAX_TOTAL_TEXT = 100 * 1024 * 1024
+const MAX_TOTAL_TEXT = 100 * 1024 * 1024 // 100MB
 
 interface PdfTextItem {
   str: string
@@ -32,7 +34,7 @@ interface NormItem {
   h: number
 }
 
-export async function parsePdfDocument(buffer: ArrayBuffer): Promise<ParseResult> {
+export async function parsePdfDocument(buffer: ArrayBuffer, options?: ParseOptions): Promise<ParseResult> {
   const doc = await getDocument({
     data: new Uint8Array(buffer),
     useSystemFonts: true,
@@ -42,14 +44,23 @@ export async function parsePdfDocument(buffer: ArrayBuffer): Promise<ParseResult
 
   try {
     const pageCount = doc.numPages
-    if (pageCount === 0) return { success: false, fileType: "pdf", pageCount: 0, error: "PDF에 페이지가 없습니다." }
+    if (pageCount === 0) return { success: false, fileType: "pdf", pageCount: 0, error: "PDF에 페이지가 없습니다.", blocks: [] } as unknown as ParseResult
+
+    // 메타데이터 추출 (best-effort)
+    const metadata: DocumentMetadata = { pageCount }
+    await extractPdfMetadata(doc, metadata)
 
     const pageTexts: string[] = []
+    const blocks: IRBlock[] = []
     let totalChars = 0
     let totalTextBytes = 0
     const effectivePageCount = Math.min(pageCount, MAX_PAGES)
 
+    // 페이지 범위 필터링
+    const pageFilter = options?.pages ? parsePageRange(options.pages, effectivePageCount) : null
+
     for (let i = 1; i <= effectivePageCount; i++) {
+      if (pageFilter && !pageFilter.has(i)) continue
       const page = await doc.getPage(i)
       const tc = await page.getTextContent()
       const pageText = extractPageContent(tc.items as PdfTextItem[])
@@ -57,16 +68,79 @@ export async function parsePdfDocument(buffer: ArrayBuffer): Promise<ParseResult
       totalTextBytes += pageText.length * 2
       if (totalTextBytes > MAX_TOTAL_TEXT) throw new KordocError("텍스트 추출 크기 초과")
       pageTexts.push(pageText)
+      blocks.push({ type: "paragraph", text: pageText })
     }
 
-    if (totalChars / effectivePageCount < 10) {
-      return { success: false, fileType: "pdf", pageCount, isImageBased: true, error: `이미지 기반 PDF (${pageCount}페이지, ${totalChars}자)` }
+    const parsedPageCount = pageFilter ? pageFilter.size : effectivePageCount
+    if (totalChars / Math.max(parsedPageCount, 1) < 10) {
+      // OCR 프로바이더가 있으면 이미지 기반 PDF도 텍스트 추출 시도
+      if (options?.ocr) {
+        try {
+          const { ocrPages } = await import("../ocr/provider.js")
+          const ocrBlocks = await ocrPages(doc, options.ocr, pageFilter, effectivePageCount)
+          if (ocrBlocks.length > 0) {
+            const ocrMarkdown = ocrBlocks.map(b => b.text || "").filter(Boolean).join("\n\n")
+            return { success: true, fileType: "pdf", markdown: ocrMarkdown, pageCount: parsedPageCount, blocks: ocrBlocks, metadata, isImageBased: true }
+          }
+        } catch {
+          // OCR 실패 시 원래 에러 반환
+        }
+      }
+      return { success: false, fileType: "pdf", pageCount, isImageBased: true, error: `이미지 기반 PDF (${pageCount}페이지, ${totalChars}자)`, code: "IMAGE_BASED_PDF" }
     }
 
     let markdown = pageTexts.filter(t => t.trim()).join("\n\n")
     markdown = cleanPdfText(markdown)
 
-    return { success: true, fileType: "pdf", markdown, pageCount: effectivePageCount }
+    return { success: true, fileType: "pdf", markdown, pageCount: parsedPageCount, blocks, metadata }
+  } finally {
+    await doc.destroy().catch(() => {})
+  }
+}
+
+// ─── PDF 메타데이터 추출 ────────────────────────────
+
+async function extractPdfMetadata(doc: { getMetadata(): Promise<unknown> }, metadata: DocumentMetadata): Promise<void> {
+  try {
+    const result = await doc.getMetadata() as { info?: Record<string, unknown> } | null
+    if (!result?.info) return
+    const info = result.info
+
+    if (typeof info.Title === "string" && info.Title.trim()) metadata.title = info.Title.trim()
+    if (typeof info.Author === "string" && info.Author.trim()) metadata.author = info.Author.trim()
+    if (typeof info.Creator === "string" && info.Creator.trim()) metadata.creator = info.Creator.trim()
+    if (typeof info.Subject === "string" && info.Subject.trim()) metadata.description = info.Subject.trim()
+    if (typeof info.Keywords === "string" && info.Keywords.trim()) {
+      metadata.keywords = info.Keywords.split(/[,;]/).map((k: string) => k.trim()).filter(Boolean)
+    }
+    if (typeof info.CreationDate === "string") metadata.createdAt = parsePdfDate(info.CreationDate)
+    if (typeof info.ModDate === "string") metadata.modifiedAt = parsePdfDate(info.ModDate)
+  } catch {
+    // best-effort
+  }
+}
+
+/** PDF 날짜 형식 (D:YYYYMMDDHHmmSS) → ISO 8601 변환 */
+function parsePdfDate(dateStr: string): string | undefined {
+  const m = dateStr.match(/D:(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?/)
+  if (!m) return undefined
+  const [, year, month = "01", day = "01", hour = "00", min = "00", sec = "00"] = m
+  return `${year}-${month}-${day}T${hour}:${min}:${sec}`
+}
+
+/** 메타데이터만 추출 (전체 파싱 없이) — MCP parse_metadata용 */
+export async function extractPdfMetadataOnly(buffer: ArrayBuffer): Promise<DocumentMetadata> {
+  const doc = await getDocument({
+    data: new Uint8Array(buffer),
+    useSystemFonts: true,
+    disableFontFace: true,
+    isEvalSupported: false,
+  }).promise
+
+  try {
+    const metadata: DocumentMetadata = { pageCount: doc.numPages }
+    await extractPdfMetadata(doc, metadata)
+    return metadata
   } finally {
     await doc.destroy().catch(() => {})
   }
@@ -111,6 +185,7 @@ function groupByY(items: NormItem[]): NormItem[][] {
   let curLine: NormItem[] = [items[0]]
 
   for (let i = 1; i < items.length; i++) {
+    // Y좌표 허용 오차 3px — PDF 렌더링 미세 오차 보정, 별표 행 경계 감지에 최적화된 값
     if (Math.abs(items[i].y - curY) > 3) {
       lines.push(curLine)
       curLine = []
@@ -134,7 +209,7 @@ function isProseSpread(items: NormItem[]): boolean {
   for (let i = 1; i < sorted.length; i++) {
     gaps.push(sorted[i].x - (sorted[i - 1].x + sorted[i - 1].w))
   }
-  // gap의 표준편차가 작고 최대 gap이 작으면 prose
+  // gap의 최대값이 작고 평균 단어 길이가 짧으면 prose
   const maxGap = Math.max(...gaps)
   const avgLen = items.reduce((s, i) => s + i.text.length, 0) / items.length
   // 짧은 단어들이 좁은 간격으로 나열 = prose (예: "위 표 제3호나목에서 남은 유효기간...")
@@ -158,6 +233,7 @@ function detectColumns(yLines: NormItem[][]): number[] | null {
   const tableYLines = bigoLineIdx >= 0 ? yLines.slice(0, bigoLineIdx) : yLines
 
   // Step 1: 모든 아이템의 x를 수집 (prose 라인 제외)
+  // CLUSTER_TOL 22px — 한국 공문서 PDF 열 간격에 최적화, 별표 표 열 감지 핵심값
   const CLUSTER_TOL = 22
   const xClusters: { center: number; count: number; minX: number }[] = []
 
@@ -180,14 +256,15 @@ function detectColumns(yLines: NormItem[][]): number[] | null {
     }
   }
 
-  // Step 2: 빈도 피크 — 최소 3회 이상 등장 (노이즈 제거)
+  // Step 2: 빈도 피크 — 최소 3회 이상 등장 (단발성 텍스트 노이즈 제거)
   const peaks = xClusters
     .filter(c => c.count >= 3)
     .sort((a, b) => a.minX - b.minX)
 
+  // 최소 3개 열이 있어야 테이블로 판별 — 2열은 일반 2단 레이아웃과 구분 불가
   if (peaks.length < 3) return null
 
-  // Step 3: 가까운 피크 병합 (간격 < 30)
+  // Step 3: 가까운 피크 병합 — MERGE_TOL 30px (같은 논리 열의 미세 위치 차이 흡수)
   const MERGE_TOL = 30
   const merged: { center: number; count: number; minX: number }[] = [peaks[0]]
   for (let i = 1; i < peaks.length; i++) {
@@ -204,13 +281,14 @@ function detectColumns(yLines: NormItem[][]): number[] | null {
     }
   }
 
-  // 열 경계 = 각 클러스터의 minX (왼쪽 정렬 기준)
+  // 열 경계 = 각 클러스터의 minX (왼쪽 정렬 기준), 병합 후 재검증
   const columns = merged.filter(c => c.count >= 3).map(c => c.minX)
   return columns.length >= 3 ? columns : null
 }
 
 function findColumn(x: number, columns: number[]): number {
   for (let i = columns.length - 1; i >= 0; i--) {
+    // 10px 왼쪽 허용 오차 — 셀 내 텍스트 미세 좌측 이탈 보정
     if (x >= columns[i] - 10) return i
   }
   return 0
@@ -255,6 +333,7 @@ function extractWithColumns(yLines: NormItem[][], columns: number[]): string {
   if (tableStart >= 0) {
     const tableLines = yLines.slice(tableStart, tableEnd)
     // 테이블 x범위 밖의 라인만 텍스트로 분리
+    // 좌측 20px, 우측 200px 허용 — 비고/주석 열이 오른쪽에 넓게 위치하는 공문서 특성 반영
     const gridLines: NormItem[][] = []
     for (const line of tableLines) {
       const inRange = line.some(item =>
@@ -402,6 +481,7 @@ function mergeLineSimple(items: NormItem[]): string {
   let result = sorted[0].text
   for (let i = 1; i < sorted.length; i++) {
     const gap = sorted[i].x - (sorted[i - 1].x + sorted[i - 1].w)
+    // 15px+ 갭 = 탭 (열 구분), 3px+ 갭 = 공백 (단어 구분)
     if (gap > 15) result += "\t"
     else if (gap > 3) result += " "
     result += sorted[i].text

@@ -10,6 +10,7 @@ import { KordocError } from "../utils.js"
 import { parsePageRange } from "../page-range.js"
 import { blocksToMarkdown } from "../table/builder.js"
 import { extractLines, filterPageBorderLines, buildTableGrids, extractCells, mapTextToCells, cellTextToString, type TextItem, type TableGrid, type ExtractedCell } from "./line-detector.js"
+import { detectClusterTables, type ClusterItem } from "./cluster-detector.js"
 // polyfill 먼저 (ES 모듈 호이스팅되므로 별도 파일 필수)
 import "./polyfill.js"
 import { getDocument, OPS, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs"
@@ -444,6 +445,10 @@ function extractBlocksWithGrids(
       hasHeader: numRows > 1,
     }
 
+    // 빈 테이블(모든 셀이 빈 문자열) 스킵
+    const hasContent = irGrid.some(row => row.some(cell => cell.text.trim() !== ""))
+    if (!hasContent) continue
+
     blocks.push({
       type: "table",
       table: irTable,
@@ -496,24 +501,29 @@ function extractPageBlocksFallback(items: NormItem[], pageNum: number): IRBlock[
     const bbox = computeBBox(items, pageNum)
     blocks.push({ type: "paragraph", text: tableText, pageNumber: pageNum, bbox, style: dominantStyle(items) })
   } else {
-    // 테이블 없음 → XY-Cut으로 읽기 순서 결정
-    const allY = items.map(i => i.y)
-    const pageHeight = Math.max(...allY) - Math.min(...allY)
-    const gapThreshold = Math.max(15, pageHeight * 0.03)
+    // 2단계: 클러스터 기반 테이블 감지 (2열 이상, 선 없는 PDF)
+    const clusterItems: ClusterItem[] = items.map(i => ({
+      text: i.text, x: i.x, y: i.y, w: i.w, h: i.h,
+      fontSize: i.fontSize, fontName: i.fontName,
+    }))
+    const clusterResults = detectClusterTables(clusterItems, pageNum)
 
-    const orderedGroups = xyCutOrder(items, gapThreshold)
+    if (clusterResults.length > 0) {
+      // 클러스터 테이블로 소비된 아이템 추적 (인덱스 기반 — 문자열 키보다 안전)
+      const usedIndices = new Set<number>()
+      for (const cr of clusterResults) {
+        for (const ci of cr.usedItems) {
+          // clusterItems와 items는 1:1 매핑, 동일 참조로 인덱스 찾기
+          const idx = clusterItems.indexOf(ci)
+          if (idx >= 0) usedIndices.add(idx)
+        }
+        blocks.push({ type: "table", table: cr.table, pageNumber: pageNum, bbox: cr.bbox })
+      }
 
-    for (const group of orderedGroups) {
-      if (group.length === 0) continue
-      const yLines = groupByY(group)
-
-      // 그룹 내에서도 컬럼 감지 시도 (소형 테이블)
-      const groupColumns = detectColumns(yLines)
-      if (groupColumns && groupColumns.length >= 3) {
-        const tableText = extractWithColumns(yLines, groupColumns)
-        const bbox = computeBBox(group, pageNum)
-        blocks.push({ type: "paragraph", text: tableText, pageNumber: pageNum, bbox, style: dominantStyle(group) })
-      } else {
+      // 테이블에 속하지 않은 나머지 텍스트 → 일반 블록
+      const remaining = items.filter((_, idx) => !usedIndices.has(idx))
+      if (remaining.length > 0) {
+        const yLines = groupByY(remaining)
         for (const line of yLines) {
           const text = mergeLineSimple(line)
           if (!text.trim()) continue
@@ -521,10 +531,45 @@ function extractPageBlocksFallback(items: NormItem[], pageNum: number): IRBlock[
           blocks.push({ type: "paragraph", text, pageNumber: pageNum, bbox, style: dominantStyle(line) })
         }
       }
+
+      // Y좌표 기준 정렬
+      blocks.sort((a, b) => {
+        const ay = a.bbox ? (a.bbox.y + a.bbox.height) : 0
+        const by = b.bbox ? (b.bbox.y + b.bbox.height) : 0
+        return by - ay
+      })
+    } else {
+      // 3단계: XY-Cut으로 읽기 순서 결정
+      const allY = items.map(i => i.y)
+      const pageHeight = Math.max(...allY) - Math.min(...allY)
+      const gapThreshold = Math.max(15, pageHeight * 0.03)
+
+      const orderedGroups = xyCutOrder(items, gapThreshold)
+
+      for (const group of orderedGroups) {
+        if (group.length === 0) continue
+        const yLines = groupByY(group)
+
+        // 그룹 내에서도 컬럼 감지 시도 (소형 테이블)
+        const groupColumns = detectColumns(yLines)
+        if (groupColumns && groupColumns.length >= 3) {
+          const tableText = extractWithColumns(yLines, groupColumns)
+          const bbox = computeBBox(group, pageNum)
+          blocks.push({ type: "paragraph", text: tableText, pageNumber: pageNum, bbox, style: dominantStyle(group) })
+        } else {
+          for (const line of yLines) {
+            const text = mergeLineSimple(line)
+            if (!text.trim()) continue
+            const bbox = computeBBox(line, pageNum)
+            blocks.push({ type: "paragraph", text, pageNumber: pageNum, bbox, style: dominantStyle(line) })
+          }
+        }
+      }
     }
   }
 
-  return blocks
+  // 한국어 특수 테이블 감지 (구분/항목/종류 패턴)
+  return detectSpecialKoreanTables(blocks)
 }
 
 /** 아이템 그룹에서 바운딩 박스 계산 */
@@ -887,8 +932,14 @@ function mergeLineSimple(items: NormItem[]): string {
   let result = sorted[0].text
   for (let i = 1; i < sorted.length; i++) {
     const gap = sorted[i].x - (sorted[i - 1].x + sorted[i - 1].w)
-    // 15px+ 갭 = 탭 (열 구분), 3px+ 갭 = 공백 (단어 구분)
+    const avgFs = (sorted[i].fontSize + sorted[i - 1].fontSize) / 2
+    // 15px+ 갭 = 탭 (열 구분)
     if (gap > 15) result += "\t"
+    // 한글-한글 사이 매우 작은 갭 (< fontSize * 0.3) → 공백 없이 붙임
+    else if (gap < avgFs * 0.3 && /[가-힣]$/.test(result) && /^[가-힣]/.test(sorted[i].text)) {
+      /* 한글 어절 끊김 복원: PDF가 문자별로 배치할 때 생기는 미세 갭 */
+    }
+    // 3px+ 갭 = 공백 (단어 구분)
     else if (gap > 3) result += " "
     result += sorted[i].text
   }
@@ -949,6 +1000,124 @@ function detectListBlocks(blocks: IRBlock[]): IRBlock[] {
     result.push(block)
   }
 
+  return result
+}
+
+// ═══════════════════════════════════════════════════════
+// 한국어 특수 테이블 감지 — "구분/항목/종류" 패턴 기반 key-value 테이블
+// ═══════════════════════════════════════════════════════
+
+/**
+ * ODL SpecialTableProcessor 포팅: 연속된 "구분:", "항목:", "종류:" 등
+ * 한국어 key-value 패턴을 2열 테이블로 변환.
+ *
+ * 동작:
+ * 1) paragraph 블록의 텍스트에서 한국어 key-value 패턴 감지
+ * 2) ":"가 있으면 key | value 2열, 없으면 colSpan=2 (전체 행)
+ * 3) 연속된 패턴을 하나의 테이블로 그룹화
+ */
+const KOREAN_TABLE_HEADER_RE = /^\(?(구분|항목|종류|분류|유형|대상|내용|기간|금액|비율|방법|절차|요건|조건|근거|목적|범위|기준)\)?[:\s]/
+
+function detectSpecialKoreanTables(blocks: IRBlock[]): IRBlock[] {
+  const result: IRBlock[] = []
+  let kvLines: { key: string; value: string; block: IRBlock }[] = []
+
+  const flushKvTable = () => {
+    if (kvLines.length < 2) {
+      // 2행 미만이면 테이블로 만들 가치 없음 → 원래 블록 복원
+      for (const kv of kvLines) result.push(kv.block)
+      kvLines = []
+      return
+    }
+
+    // 2열 테이블 생성
+    const cells: import("../types.js").IRCell[][] = kvLines.map(kv => {
+      if (kv.value) {
+        return [
+          { text: kv.key, colSpan: 1, rowSpan: 1 },
+          { text: kv.value, colSpan: 1, rowSpan: 1 },
+        ]
+      }
+      // ":" 없는 줄 → 전체 행 (colSpan=2)
+      return [
+        { text: kv.key, colSpan: 2, rowSpan: 1 },
+        { text: "", colSpan: 1, rowSpan: 1 },
+      ]
+    })
+
+    const irTable: IRTable = {
+      rows: cells.length,
+      cols: 2,
+      cells,
+      hasHeader: true,
+    }
+
+    // 첫 블록의 위치 정보 사용
+    const firstBlock = kvLines[0].block
+    result.push({
+      type: "table",
+      table: irTable,
+      pageNumber: firstBlock.pageNumber,
+      bbox: firstBlock.bbox,
+    })
+    kvLines = []
+  }
+
+  for (const block of blocks) {
+    if (block.type !== "paragraph" || !block.text) {
+      flushKvTable()
+      result.push(block)
+      continue
+    }
+
+    const text = block.text.trim()
+
+    // "구분: xxx" 또는 "항목: xxx" 패턴 매칭
+    if (KOREAN_TABLE_HEADER_RE.test(text)) {
+      const colonIdx = text.indexOf(":")
+      if (colonIdx >= 0) {
+        kvLines.push({
+          key: text.slice(0, colonIdx).trim(),
+          value: text.slice(colonIdx + 1).trim(),
+          block,
+        })
+      } else {
+        // ":" 없이 공백으로 구분된 경우: "구분 xxx"
+        const spaceIdx = text.search(/\s/)
+        if (spaceIdx > 0) {
+          kvLines.push({
+            key: text.slice(0, spaceIdx).trim(),
+            value: text.slice(spaceIdx + 1).trim(),
+            block,
+          })
+        } else {
+          kvLines.push({ key: text, value: "", block })
+        }
+      }
+      continue
+    }
+
+    // key-value 패턴이 아닌 블록이 나오면 축적된 것을 flush
+    // 단, 이미 수집 중이고 현재 블록이 "label: value" 형태면 계속 수집
+    if (kvLines.length > 0 && text.includes(":") && !text.includes("(") && !text.includes(")")) {
+      const colonIdx = text.indexOf(":")
+      const key = text.slice(0, colonIdx).trim()
+      // key가 순수 한글 2~8자 (공백/괄호 없음)면 유효한 key-value 라인
+      if (/^[가-힣]+$/.test(key) && key.length >= 2 && key.length <= 8) {
+        kvLines.push({
+          key,
+          value: text.slice(colonIdx + 1).trim(),
+          block,
+        })
+        continue
+      }
+    }
+
+    flushKvTable()
+    result.push(block)
+  }
+
+  flushKvTable()
   return result
 }
 

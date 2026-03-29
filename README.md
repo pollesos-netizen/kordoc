@@ -14,7 +14,15 @@
 
 ---
 
-## What's New in v1.5.0
+## What's New in v1.6.0
+
+- **Cluster-Based Table Detection (PDF)** — Detects borderless tables by analyzing text alignment patterns. Baseline grouping + X-coordinate clustering identifies 2+ column tables that line-based detection misses. Sort-and-split clustering for order-independent results.
+- **Korean Special Table Detection** — Automatically detects `구분/항목/종류`-style key-value patterns common in Korean government documents and converts them to structured 2-column tables.
+- **Korean Word-Break Recovery** — Improved merging of broken Korean words in PDF table cells. Handles character-level PDF rendering (micro-gaps between Hangul characters) and cell line-break artifacts up to 8 characters.
+- **Empty Table Filtering** — Tables with all-empty cells (from line detection of decorative borders) are now automatically removed.
+
+<details>
+<summary>v1.5.0 features</summary>
 
 - **Line-Based Table Detection (PDF)** — Ported from OpenDataLoader. Extracts horizontal/vertical lines from PDF graphics commands, builds grid via intersection vertices, maps text to cells by bbox overlap. Proper colspan/rowspan detection. Falls back to heuristic for line-free PDFs.
 - **IRBlock v2** — 6 block types: `heading`, `paragraph`, `table`, `list`, `image`, `separator`. New fields: `bbox`, `style`, `pageNumber`, `level`, `href`, `footnoteText`.
@@ -24,6 +32,8 @@
 - **HWPX Enhancements** — Style parsing from header.xml, hyperlink/footnote extraction.
 - **List Detection** — Numbered paragraphs after tables auto-converted to ordered list blocks.
 - **MCP Server** — Now returns `outline` and `warnings` in parse_document responses.
+
+</details>
 
 <details>
 <summary>v1.4.x features</summary>

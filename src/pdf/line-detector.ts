@@ -509,21 +509,33 @@ export function cellTextToString(items: TextItem[]): string {
   }
   lines.push(curLine)
 
-  // 각 행을 텍스트로 변환
+  // 각 행을 텍스트로 변환 — 한글 간 작은 갭은 공백 없이 붙임
   const textLines = lines.map(line => {
     const s = line.sort((a, b) => a.x - b.x)
-    return s.map(i => i.text).join(" ")
+    if (s.length === 1) return s[0].text
+    let result = s[0].text
+    for (let j = 1; j < s.length; j++) {
+      const gap = s[j].x - (s[j - 1].x + s[j - 1].w)
+      const avgFs = (s[j].fontSize + s[j - 1].fontSize) / 2
+      // 한글-한글 사이 매우 작은 갭 (< fontSize * 0.3) → PDF 문자 개별 배치 잔재
+      if (gap < avgFs * 0.3 && /[가-힣]$/.test(result) && /^[가-힣]/.test(s[j].text)) {
+        result += s[j].text
+      } else {
+        result += " " + s[j].text
+      }
+    }
+    return result
   })
 
   // 한국어 줄바꿈 병합: "전자여\n권" → "전자여권"
-  // 조건: 다음 줄이 한 단어(공백 없음, 5자 이하)이고 이전 줄이 한글로 끝날 때만
+  // 셀 컨텍스트에서는 더 공격적으로: 8자 이하 순수 한글 또는 한글+숫자 단어
   if (textLines.length <= 1) return textLines[0] || ""
   const merged: string[] = [textLines[0]]
   for (let i = 1; i < textLines.length; i++) {
     const prev = merged[merged.length - 1]
     const curr = textLines[i]
-    // 단일 짧은 한글 단어 (공백 없이 5자 이하) = 잘린 단어 조각
-    if (/[가-힣]$/.test(prev) && /^[가-힣]+$/.test(curr) && curr.length <= 5 && !curr.includes(" ")) {
+    // 짧은 순수 한글 (8자 이하, 공백 없음) = 잘린 단어 조각 또는 조사
+    if (/[가-힣]$/.test(prev) && /^[가-힣]+$/.test(curr) && curr.length <= 8 && !curr.includes(" ")) {
       merged[merged.length - 1] = prev + curr
     } else {
       merged.push(curr)

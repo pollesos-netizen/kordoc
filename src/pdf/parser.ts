@@ -1047,6 +1047,9 @@ function detectListBlocks(blocks: IRBlock[]): IRBlock[] {
  */
 const KOREAN_TABLE_HEADER_RE = /^\(?(구분|항목|종류|분류|유형|대상|내용|기간|금액|비율|방법|절차|요건|조건|근거|목적|범위|기준)\)?[:\s]/
 
+/** KV 오탐 패턴: 시간(14:30), URL(://), 숫자:숫자(3:2) */
+const KV_FALSE_POSITIVE_RE = /\d{1,2}:\d{2}|:\/\/|\d+:\d+/
+
 function detectSpecialKoreanTables(blocks: IRBlock[]): IRBlock[] {
   const result: IRBlock[] = []
   let kvLines: { key: string; value: string; block: IRBlock }[] = []
@@ -1128,17 +1131,20 @@ function detectSpecialKoreanTables(blocks: IRBlock[]): IRBlock[] {
 
     // key-value 패턴이 아닌 블록이 나오면 축적된 것을 flush
     // 단, 이미 수집 중이고 현재 블록이 "label: value" 형태면 계속 수집
-    if (kvLines.length > 0 && text.includes(":") && !text.includes("(") && !text.includes(")")) {
-      const colonIdx = text.indexOf(":")
-      const key = text.slice(0, colonIdx).trim()
-      // key가 순수 한글 2~8자 (공백/괄호 없음)면 유효한 key-value 라인
-      if (/^[가-힣]+$/.test(key) && key.length >= 2 && key.length <= 8) {
-        kvLines.push({
-          key,
-          value: text.slice(colonIdx + 1).trim(),
-          block,
-        })
-        continue
+    if (kvLines.length > 0 && text.includes(":")) {
+      // 오탐 제외: 시간(14:30), URL(http://), 숫자:숫자(3:2), 괄호 포함
+      if (!KV_FALSE_POSITIVE_RE.test(text) && !text.includes("(") && !text.includes(")")) {
+        const colonIdx = text.indexOf(":")
+        const key = text.slice(0, colonIdx).trim()
+        // key가 순수 한글 2~8자 (공백/괄호 없음)면 유효한 key-value 라인
+        if (/^[가-힣]+$/.test(key) && key.length >= 2 && key.length <= 8) {
+          kvLines.push({
+            key,
+            value: text.slice(colonIdx + 1).trim(),
+            block,
+          })
+          continue
+        }
       }
     }
 

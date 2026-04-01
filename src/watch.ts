@@ -7,7 +7,9 @@ import { toArrayBuffer } from "./utils.js"
 import type { WatchOptions } from "./types.js"
 
 const SUPPORTED_EXTENSIONS = new Set([".hwp", ".hwpx", ".pdf"])
-const DEBOUNCE_MS = 500
+const DEBOUNCE_MS = 1000
+/** 파일 쓰기 완료 판정: 연속 2회 동일 크기 확인 간격 */
+const STABLE_CHECK_MS = 300
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 
 /**
@@ -33,6 +35,21 @@ export async function watchDirectory(options: WatchOptions): Promise<void> {
   // 디바운스 맵
   const pending = new Map<string, ReturnType<typeof setTimeout>>()
 
+  /** 파일 크기가 안정화될 때까지 대기 (쓰기 완료 감지) */
+  const waitForStableSize = async (absPath: string): Promise<number> => {
+    let prevSize = statSync(absPath).size
+    await new Promise(r => setTimeout(r, STABLE_CHECK_MS))
+    if (!existsSync(absPath)) return 0
+    const currSize = statSync(absPath).size
+    if (currSize !== prevSize) {
+      // 크기가 변했으면 한 번 더 대기
+      await new Promise(r => setTimeout(r, STABLE_CHECK_MS))
+      if (!existsSync(absPath)) return 0
+      return statSync(absPath).size
+    }
+    return currSize
+  }
+
   const processFile = async (filePath: string) => {
     const ext = extname(filePath).toLowerCase()
     if (!SUPPORTED_EXTENSIONS.has(ext)) return
@@ -42,7 +59,7 @@ export async function watchDirectory(options: WatchOptions): Promise<void> {
       const absPath = resolve(dir, filePath)
       if (!existsSync(absPath)) return
 
-      const fileSize = statSync(absPath).size
+      const fileSize = await waitForStableSize(absPath)
       if (fileSize > MAX_FILE_SIZE || fileSize === 0) return
 
       log(`[kordoc watch] 변환 중: ${fileName}`)

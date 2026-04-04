@@ -114,11 +114,12 @@ function sanitizeText(text: string): string {
     .replace(/  +/g, " ")
     .trim()
   // 균등배분 스페이스 정리 ("현 장 대 응 단 장" → "현장대응단장")
-  // 짧은 텍스트(30자 이하)에서 70%+ 토큰이 1글자면 균등배분으로 판단
+  // 짧은 텍스트(30자 이하)에서 70%+ 토큰이 한글 1글자면 균등배분으로 판단
   if (result.length <= 30 && result.includes(" ")) {
     const tokens = result.split(" ")
-    const singleCharCount = tokens.filter(t => t.length === 1).length
-    if (tokens.length >= 3 && singleCharCount / tokens.length >= 0.7) {
+    // 한글 1글자 토큰만 카운트 — ASCII 특수문자(< > & 등)는 균등배분이 아님
+    const koreanSingleCharCount = tokens.filter(t => t.length === 1 && /[\uAC00-\uD7AF\u3131-\u318E]/.test(t)).length
+    if (tokens.length >= 3 && koreanSingleCharCount / tokens.length >= 0.7) {
       result = tokens.join("")
     }
   }
@@ -248,9 +249,14 @@ function tableToMarkdown(table: IRTable): string {
   const skip = new Set<string>()
 
   for (let r = 0; r < numRows; r++) {
+    // colSpan이 있으면 cells[r]의 실제 인덱스 ≠ display 열 인덱스
+    // display 열 기준으로 순회하되, cells[r]에서는 순차적으로 소비
+    let cellIdx = 0
     for (let c = 0; c < numCols; c++) {
       if (skip.has(`${r},${c}`)) continue
-      const cell = cells[r][c]
+      const cell = cells[r]?.[cellIdx]
+      if (!cell) break
+      cellIdx++
       display[r][c] = sanitizeText(cell.text).replace(/\n/g, "<br>")
 
       for (let dr = 0; dr < cell.rowSpan; dr++) {
@@ -261,21 +267,28 @@ function tableToMarkdown(table: IRTable): string {
           }
         }
       }
+      // colSpan > 1이면 display 열 인덱스를 건너뜀
+      c += cell.colSpan - 1
     }
   }
 
   // rowSpan 잔류 처리:
   // 1) 완전 빈 행 제거
   // 2) "첫 열만 값, 나머지 빈" 행 → 다음 데이터 행의 첫 열에 값을 전파
+  //    단, colSpan으로 인한 빈 열(skip 셀)은 이 대상이 아님
   const uniqueRows: string[][] = []
   let pendingFirstCol = ""
-  for (const row of display) {
+  for (let r = 0; r < display.length; r++) {
+    const row = display[r]
     const isEmptyPlaceholder = row.every(cell => cell === "")
     if (isEmptyPlaceholder) continue
 
-    // 첫 열만 값이 있고 나머지 모두 빈 행 → 임시 저장
+    // 빈 열이 skip(colSpan/rowSpan 커버)인지 확인 — skip이면 "첫 열만 값" 대상 아님
+    const hasSkippedCols = row.some((cell, c) => cell === "" && skip.has(`${r},${c}`))
+
+    // 첫 열만 값이 있고 나머지 모두 빈 행 → 임시 저장 (colSpan 스킵 제외)
     const nonEmptyCols = row.filter(cell => cell !== "")
-    if (nonEmptyCols.length === 1 && row[0] !== "" && row.slice(1).every(c => c === "")) {
+    if (!hasSkippedCols && nonEmptyCols.length === 1 && row[0] !== "" && row.slice(1).every(c => c === "")) {
       pendingFirstCol = row[0]
       continue
     }

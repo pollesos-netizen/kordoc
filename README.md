@@ -269,3 +269,11 @@ import type {
 ## 라이선스
 
 [MIT](./LICENSE)
+
+이 프로젝트는 아래 오픈소스를 포함합니다:
+- **OpenDataLoader PDF** (Apache 2.0, Hancom Inc.) — PDF 테이블 감지 알고리즘
+- **cfb** (Apache 2.0, SheetJS) — HWP5 OLE2 컨테이너 파싱
+- **pdfjs-dist** (Apache 2.0, Mozilla) — PDF 텍스트 추출
+- **JSZip** (MIT, Stuart Knightley 외) — ZIP 기반 포맷 파싱
+
+자세한 내용은 [NOTICE](./NOTICE) 파일을 참조하세요.

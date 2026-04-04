@@ -276,3 +276,11 @@ Production-tested across 5 Korean government projects: school curriculum plans, 
 ## License
 
 [MIT](./LICENSE)
+
+This project includes the following open-source components:
+- **OpenDataLoader PDF** (Apache 2.0, Hancom Inc.) — PDF table detection algorithms
+- **cfb** (Apache 2.0, SheetJS) — HWP5 OLE2 container parsing
+- **pdfjs-dist** (Apache 2.0, Mozilla) — PDF text extraction
+- **JSZip** (MIT, Stuart Knightley et al.) — ZIP-based format parsing
+
+See [NOTICE](./NOTICE) for details.

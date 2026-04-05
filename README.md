@@ -2,7 +2,7 @@
 
 **모두 파싱해버리겠다.**
 
-[![npm version](https://img.shields.io/badge/npm-v2.0.1-cb3837.svg)](https://www.npmjs.com/package/kordoc)
+[![npm version](https://img.shields.io/badge/npm-v2.0.2-cb3837.svg)](https://www.npmjs.com/package/kordoc)
 [![license](https://img.shields.io/npm/l/kordoc.svg)](https://github.com/chrisryugj/kordoc/blob/main/LICENSE)
 
 > *대한민국에서 둘째가라면 서러울 문서지옥. 거기서 7년 버틴 공무원이 만들었습니다.*

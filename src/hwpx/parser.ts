@@ -537,8 +537,9 @@ function detectHwpxHeadings(blocks: IRBlock[], styleMap: HwpxStyleMap): void {
       else if (ratio >= HEADING_RATIO_H3) level = 3
     }
 
-    // "제N조/장/절" 패턴
-    if (/^제\d+[조장절편]/.test(text) && text.length <= 50) {
+    // "제N조/장/절" 패턴 — 균등배분 공백 허용 ("제 1 장" → "제1장")
+    const compactText = text.replace(/\s+/g, "")
+    if (/^제\d+[조장절편]/.test(compactText) && text.length <= 50) {
       if (level === 0) level = 3
     }
 
@@ -611,9 +612,15 @@ function walkSection(
         if (newTable.rows.length > 0) {
           if (tableStack.length > 0) {
             const parentTable = tableStack.pop()!
-            const nestedText = convertTableToText(newTable.rows)
-            if (parentTable.cell) {
-              parentTable.cell.text += (parentTable.cell.text ? "\n" : "") + nestedText
+            // 중첩 표가 충분히 크면 (3행+, 2열+) 별도 블록으로 분리
+            const nestedCols = Math.max(...newTable.rows.map(r => r.length))
+            if (newTable.rows.length >= 3 && nestedCols >= 2) {
+              blocks.push({ type: "table", table: buildTable(newTable.rows), pageNumber: sectionNum })
+            } else {
+              const nestedText = convertTableToText(newTable.rows)
+              if (parentTable.cell) {
+                parentTable.cell.text += (parentTable.cell.text ? "\n" : "") + nestedText
+              }
             }
             tableCtx = parentTable
           } else {
@@ -729,9 +736,14 @@ function walkParagraphChildren(
         if (newTable.rows.length > 0) {
           if (tableStack.length > 0) {
             const parentTable = tableStack.pop()!
-            const nestedText = convertTableToText(newTable.rows)
-            if (parentTable.cell) {
-              parentTable.cell.text += (parentTable.cell.text ? "\n" : "") + nestedText
+            const nestedCols = Math.max(...newTable.rows.map(r => r.length))
+            if (newTable.rows.length >= 3 && nestedCols >= 2) {
+              blocks.push({ type: "table", table: buildTable(newTable.rows), pageNumber: sectionNum })
+            } else {
+              const nestedText = convertTableToText(newTable.rows)
+              if (parentTable.cell) {
+                parentTable.cell.text += (parentTable.cell.text ? "\n" : "") + nestedText
+              }
             }
             tableCtx = parentTable
           } else {
@@ -742,20 +754,71 @@ function walkParagraphChildren(
           tableCtx = tableStack.length > 0 ? tableStack.pop()! : null
         }
       } else if (localTag === "pic" || localTag === "shape" || localTag === "drawingObject") {
-        const imgRef = extractImageRef(el)
-        if (imgRef) {
-          blocks.push({ type: "image", text: imgRef, pageNumber: sectionNum })
-        } else if (warnings && sectionNum) {
-          warnings.push({ page: sectionNum, message: `스킵된 요소: ${localTag}`, code: "SKIPPED_IMAGE" })
+        // 도형/이미지 안에 drawText(글상자)가 있으면 텍스트 추출 우선
+        const drawTextChild = findDescendant(el, "drawText")
+        if (drawTextChild) {
+          extractDrawTextBlocks(drawTextChild, blocks, styleMap, sectionNum)
+        } else {
+          const imgRef = extractImageRef(el)
+          if (imgRef) {
+            blocks.push({ type: "image", text: imgRef, pageNumber: sectionNum })
+          } else if (warnings && sectionNum) {
+            warnings.push({ page: sectionNum, message: `스킵된 요소: ${localTag}`, code: "SKIPPED_IMAGE" })
+          }
         }
-      } else if (localTag === "r" || localTag === "run" || localTag === "ctrl") {
-        // <hp:run>, <hp:ctrl> 내부에 테이블/이미지가 포함될 수 있음 — 재귀
+      } else if (localTag === "drawText") {
+        // 글상자(TextBox) 안 텍스트 추출 — <hp:p> 순회
+        extractDrawTextBlocks(el, blocks, styleMap, sectionNum)
+      } else if (localTag === "r" || localTag === "run" || localTag === "ctrl"
+        || localTag === "rect" || localTag === "ellipse" || localTag === "polygon"
+        || localTag === "line" || localTag === "arc" || localTag === "curve"
+        || localTag === "connectLine" || localTag === "container") {
+        // <hp:run>, <hp:ctrl>, 도형 요소 내부에 테이블/이미지/글상자가 포함될 수 있음 — 재귀
         walkChildren(el, d + 1)
       }
     }
   }
   walkChildren(node, depth)
   return tableCtx
+}
+
+/** 자손에서 특정 태그명의 첫 번째 요소 탐색 (최대 깊이 5) */
+function findDescendant(node: Node, targetTag: string, depth = 0): Element | null {
+  if (depth > 5) return null
+  const children = node.childNodes
+  if (!children) return null
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i] as Element
+    if (child.nodeType !== 1) continue
+    const tag = (child.tagName || child.localName || "").replace(/^[^:]+:/, "")
+    if (tag === targetTag) return child
+    const found = findDescendant(child, targetTag, depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
+/** drawText(글상자) 내부의 <p> 요소들에서 텍스트를 추출하여 paragraph 블록 생성 */
+function extractDrawTextBlocks(drawTextNode: Node, blocks: IRBlock[], styleMap?: HwpxStyleMap, sectionNum?: number): void {
+  const children = drawTextNode.childNodes
+  if (!children) return
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i] as Element
+    if (child.nodeType !== 1) continue
+    const tag = (child.tagName || child.localName || "").replace(/^[^:]+:/, "")
+    if (tag === "subList" || tag === "p" || tag === "para") {
+      // subList 안의 <p>들을 순회
+      if (tag === "subList") {
+        extractDrawTextBlocks(child, blocks, styleMap, sectionNum)
+      } else {
+        const info = extractParagraphInfo(child, styleMap)
+        const text = info.text.trim()
+        if (text) {
+          blocks.push({ type: "paragraph", text, style: info.style ?? undefined, pageNumber: sectionNum })
+        }
+      }
+    }
+  }
 }
 
 interface ParagraphInfo {
@@ -785,8 +848,17 @@ function extractParagraphInfo(para: Element, styleMap?: HwpxStyleMap): Paragraph
 
       const tag = (child.tagName || child.localName || "").replace(/^[^:]+:/, "")
       switch (tag) {
-        case "t": text += child.textContent || ""; break
-        case "tab": text += "\t"; break
+        case "t": walk(child); break  // 자식 순회 (tab 등 하위 요소 처리)
+        case "tab": {
+          const leader = child.getAttribute("leader")
+          if (leader && leader !== "0") {
+            // 목차 리더 탭 (점선/실선 등) — 뒤에 페이지번호가 오므로 이후 텍스트 무시
+            text += "\x1F"  // 특수 마커: 이후 텍스트 제거용
+          } else {
+            text += "\t"
+          }
+          break
+        }
         case "br":
           if ((child.getAttribute("type") || "line") === "line") text += "\n"
           break
@@ -838,6 +910,10 @@ function extractParagraphInfo(para: Element, styleMap?: HwpxStyleMap): Paragraph
     }
   }
   walk(para)
+
+  // 목차 리더 마커(\x1F) 이후 텍스트(페이지번호) 제거
+  const leaderIdx = text.indexOf("\x1F")
+  if (leaderIdx >= 0) text = text.substring(0, leaderIdx)
 
   let cleanText = text.replace(/[ \t]+/g, " ").trim()
 

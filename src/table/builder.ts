@@ -245,8 +245,11 @@ export function blocksToMarkdown(blocks: IRBlock[]): string {
       if (lines.length > 0 && lines[lines.length - 1] !== "") {
         lines.push("")
       }
-      lines.push(tableToMarkdown(block.table))
-      lines.push("")
+      const tableMd = tableToMarkdown(block.table)
+      if (tableMd) {
+        lines.push(tableMd)
+        lines.push("")
+      }
     }
   }
 
@@ -258,9 +261,10 @@ function tableToMarkdown(table: IRTable): string {
 
   const { cells, rows: numRows, cols: numCols } = table
 
-  // 1행 1열 → 구조화된 텍스트
+  // 1행 1열 → 구조화된 텍스트 (빈 셀이면 스킵)
   if (numRows === 1 && numCols === 1) {
     const content = sanitizeText(cells[0][0].text)
+    if (!content) return ""
     return content
       .split(/\n/)
       .map(line => {
@@ -317,12 +321,11 @@ function tableToMarkdown(table: IRTable): string {
     const isEmptyPlaceholder = row.every(cell => cell === "")
     if (isEmptyPlaceholder) continue
 
-    // 빈 열이 skip(colSpan/rowSpan 커버)인지 확인 — skip이면 "첫 열만 값" 대상 아님
-    const hasSkippedCols = row.some((cell, c) => cell === "" && skip.has(`${r},${c}`))
-
-    // 첫 열만 값이 있고 나머지 모두 빈 행 → 임시 저장 (colSpan 스킵 제외)
+    // 첫 열만 값이 있고 나머지 모두 빈 행 → 다음 데이터 행의 첫 열에 전파
+    // 단, colSpan으로 인한 빈 열(skip 셀)은 "진짜 빈"이 아니므로 제외
     const nonEmptyCols = row.filter(cell => cell !== "")
-    if (!hasSkippedCols && nonEmptyCols.length === 1 && row[0] !== "" && row.slice(1).every(c => c === "")) {
+    const hasSkipInRow = row.some((_, c) => skip.has(`${r},${c}`))
+    if (!hasSkipInRow && nonEmptyCols.length === 1 && row[0] !== "" && row.slice(1).every(c => c === "")) {
       pendingFirstCol = row[0]
       continue
     }

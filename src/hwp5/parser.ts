@@ -543,13 +543,18 @@ function parseSection(records: HwpRecord[], docInfo: HwpDocInfo | null, warnings
         i = nextIdx
         continue
       }
-      // 이미지/OLE 제어 — binDataId 추출 시도
+      // 그리기 객체(gso) — 이미지 또는 글상자
       if (ctrlId === "gso " || ctrlId === " osg") {
         const binId = extractBinDataId(records, i)
         if (binId >= 0) {
           blocks.push({ type: "image", text: String(binId), pageNumber: sectionNum })
         } else {
-          warnings.push({ page: sectionNum, message: `스킵된 제어 요소: ${ctrlId.trim()}`, code: "SKIPPED_IMAGE" })
+          // 이미지가 아니면 글상자(TextBox) 텍스트 추출 시도
+          const boxText = extractTextBoxText(records, i)
+          if (boxText) {
+            blocks.push({ type: "paragraph", text: boxText, pageNumber: sectionNum })
+          }
+          // 텍스트도 없으면 조용히 스킵 (장식용 도형)
         }
       } else if (ctrlId === " elo" || ctrlId === "ole ") {
         warnings.push({ page: sectionNum, message: `스킵된 제어 요소: ${ctrlId.trim()}`, code: "SKIPPED_IMAGE" })
@@ -601,6 +606,24 @@ function extractNoteText(records: HwpRecord[], ctrlIdx: number): string | null {
   }
 
   return texts.length > 0 ? texts.join(" ") : null
+}
+
+/** 글상자(TextBox) 제어 요소 아래의 텍스트 추출 — extractNoteText와 동일 패턴 */
+function extractTextBoxText(records: HwpRecord[], ctrlIdx: number): string | null {
+  const ctrlLevel = records[ctrlIdx].level
+  const texts: string[] = []
+
+  for (let j = ctrlIdx + 1; j < records.length && j < ctrlIdx + 200; j++) {
+    const r = records[j]
+    if (r.level <= ctrlLevel) break
+
+    if (r.tagId === TAG_PARA_TEXT) {
+      const t = extractText(r.data).trim()
+      if (t) texts.push(t)
+    }
+  }
+
+  return texts.length > 0 ? texts.join("\n") : null
 }
 
 /** 하이퍼링크 CTRL_HEADER에서 URL 추출 (best-effort) */

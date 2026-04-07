@@ -20,7 +20,14 @@ const MAX_FILE_SIZE = 500 * 1024 * 1024
 function safePath(filePath: string): string {
   if (!filePath) throw new KordocError("파일 경로가 비어있습니다")
   const resolved = resolve(filePath)
-  const real = realpathSync(resolved)
+  let real: string
+  try {
+    real = realpathSync(resolved)
+  } catch (err: any) {
+    if (err?.code === "ENOENT") throw new KordocError(`파일을 찾을 수 없습니다: ${resolved}`)
+    if (err?.code === "EACCES" || err?.code === "EPERM") throw new KordocError(`파일 접근 권한이 없습니다: ${resolved}`)
+    throw new KordocError(`경로 처리 오류 [${err?.code ?? "UNKNOWN"}]`)
+  }
   if (!isAbsolute(real)) throw new KordocError("절대 경로만 허용됩니다")
   const ext = extname(real).toLowerCase()
   if (!ALLOWED_EXTENSIONS.has(ext)) throw new KordocError(`지원하지 않는 확장자입니다: ${ext} (허용: ${[...ALLOWED_EXTENSIONS].join(", ")})`)
@@ -33,11 +40,21 @@ const MAX_METADATA_FILE_SIZE = 50 * 1024 * 1024
 /** 파일 읽기 + 크기 검증 공통 로직 */
 function readValidatedFile(filePath: string, maxSize = MAX_FILE_SIZE): { buffer: ArrayBuffer; resolved: string } {
   const resolved = safePath(filePath)
-  const fileSize = statSync(resolved).size
+  let fileSize: number
+  try {
+    fileSize = statSync(resolved).size
+  } catch (err: any) {
+    throw new KordocError(`파일 상태 읽기 실패 [${err?.code ?? "UNKNOWN"}]: ${resolved}`)
+  }
   if (fileSize > maxSize) {
     throw new KordocError(`파일이 너무 큽니다: ${(fileSize / 1024 / 1024).toFixed(1)}MB (최대 ${maxSize / 1024 / 1024}MB)`)
   }
-  const raw = readFileSync(resolved)
+  let raw: Buffer
+  try {
+    raw = readFileSync(resolved)
+  } catch (err: any) {
+    throw new KordocError(`파일 읽기 실패 [${err?.code ?? "UNKNOWN"}]: ${resolved}`)
+  }
   return { buffer: toArrayBuffer(raw), resolved }
 }
 

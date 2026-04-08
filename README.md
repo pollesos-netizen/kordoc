@@ -27,13 +27,21 @@ HWP, HWPX, PDF, XLSX, DOCX — 관공서에서 쏟아지는 모든 문서를 파
 
 ---
 
-## v2.1.0 변경사항
+## v2.2.0 변경사항
 
-- **📄 대형 HWPX 정부문서 파싱** — `<p>><run>><tbl>` 구조의 중첩 테이블 파싱 누락 수정. 산업통상자원부 품목개요서(RFP, 2.8MB+) 등 대형 공문서 정상 파싱.
+- **🛡️ 보안 강화 7건** — XLSX/DOCX Billion Laughs(XXE) 방지, Watch SSRF 리다이렉트·10진수IP·symlink 차단, HWP5 lenient decompression bomb 방지, CFB FAT 섹터 상한, buildTableDirect 메모리 폭주 방지.
+- **💥 Crash 방지** — `Math.min/max(...spread)` 스택 오버플로 수정 (15개소), Watch 동시 처리 제한(MAX_CONCURRENT=3).
+- **🐛 정확성 개선** — Levenshtein 동일 길이 유사도 1.0 버그 수정, MCP `parse_metadata` XLSX/DOCX 오분류 수정, PDF 폰트 크기 통계 메모리 최적화(40MB→~50엔트리).
+- **📦 품질** — CLI JSON Uint8Array base64 변환, `isPathTraversal` 합법적 파일명 오탐 수정.
+
+<details>
+<summary>v2.1.0 변경사항</summary>
+
+- **📄 대형 HWPX 정부문서 파싱** — `<p>><run>><tbl>` 구조의 중첩 테이블 파싱 누락 수정.
 - **📰 PDF 2단 레이아웃 감지** — 다단 논문·보고서의 컬럼 구조를 감지하여 읽기 순서대로 추출.
-- **📊 병합 셀 정보 보존** — colSpan 병합 셀 텍스트를 병합 위치에 복제하여 마크다운 변환 시 정보 손실 방지.
-- **🔊 에러 가시성 개선** — watch 모드 파일 처리 실패·webhook 오류를 stderr로 출력. OCR 실패 페이지에 `[OCR 실패: 페이지 N]` placeholder 추가.
-- **🛡️ 입력 검증 강화** — 폰트 크기 NaN/음수 가드, colSpan/rowSpan NaN 가드, 이미지 확장자 비안전 단언 제거.
+- **🛡️ 입력 검증 강화** — 폰트 크기 NaN/음수 가드, colSpan/rowSpan NaN 가드.
+
+</details>
 
 <details>
 <summary>v2.0 변경사항</summary>

@@ -26,13 +26,21 @@ Beyond simple text extraction, kordoc automates the **entire lifecycle of Korean
 
 ---
 
-## What's New in v2.1.0
+## What's New in v2.2.0
 
-- **📄 Large HWPX Government Document Parsing** — Fixed missing nested table parsing for `<p>><run>><tbl>` structure. Large public documents (e.g. MOTIR RFP files, 2.8MB+) now parse correctly.
-- **📰 PDF Two-Column Layout Detection** — Detects multi-column structure in academic papers and reports, extracting text in reading order.
-- **📊 Merged Cell Content Preservation** — colSpan merged cell text is now duplicated across merged positions, preventing information loss in markdown conversion.
-- **🔊 Improved Error Visibility** — Watch mode file processing errors and webhook failures now output to stderr. Failed OCR pages add `[OCR failed: page N]` placeholder.
-- **🛡️ Input Validation Hardening** — NaN/negative guard for font size parsing, NaN guard for colSpan/rowSpan, unsafe assertion removed from image extension extraction.
+- **🛡️ Security Hardening (7 fixes)** — XLSX/DOCX Billion Laughs (XXE) prevention, Watch SSRF redirect/decimal-IP/symlink blocking, HWP5 lenient decompression bomb prevention, CFB FAT sector cap, buildTableDirect memory explosion prevention.
+- **💥 Crash Prevention** — Fixed `Math.min/max(...spread)` stack overflow (15 locations), Watch concurrency limit (MAX_CONCURRENT=3).
+- **🐛 Correctness** — Levenshtein same-length similarity=1.0 bug fix, MCP `parse_metadata` XLSX/DOCX misclassification fix, PDF font-size stats memory optimization (40MB → ~50 entries).
+- **📦 Quality** — CLI JSON Uint8Array base64 conversion, `isPathTraversal` false positive on legitimate filenames fixed.
+
+<details>
+<summary>v2.1.0 changes</summary>
+
+- **📄 Large HWPX Government Document Parsing** — Fixed missing nested table parsing for `<p>><run>><tbl>` structure.
+- **📰 PDF Two-Column Layout Detection** — Detects multi-column structure in academic papers and reports.
+- **🛡️ Input Validation Hardening** — NaN/negative guards for font size, colSpan/rowSpan.
+
+</details>
 
 <details>
 <summary>v2.0 changes</summary>

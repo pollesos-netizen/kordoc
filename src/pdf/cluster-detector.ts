@@ -35,13 +35,15 @@ const Y_TOL = 3
 /** 열 클러스터링 허용 오차 (pt) — detectColumns의 CLUSTER_TOL=22보다 엄격 */
 const COL_CLUSTER_TOL = 15
 /** 테이블로 인정하기 위한 최소 행 수 */
-const MIN_ROWS = 3
+const MIN_ROWS = 4
 /** 테이블로 인정하기 위한 최소 열 수 */
 const MIN_COLS = 2
 /** 같은 행 내 아이템 간 최소 갭 (테이블 컬럼 구분) — fontSize 배수 */
-const MIN_GAP_FACTOR = 1.5
+const MIN_GAP_FACTOR = 2.0
+/** 같은 행 내 아이템 간 최소 갭 절대값 (pt) — 텍스트 박스 들여쓰기 오탐 방지 */
+const MIN_GAP_ABSOLUTE = 20
 /** 열에 값이 있는 행의 비율 최소 기준 */
-const MIN_COL_FILL_RATIO = 0.3
+const MIN_COL_FILL_RATIO = 0.4
 
 interface RowGroup {
   y: number       // 대표 Y좌표 (평균 baseline)
@@ -122,7 +124,7 @@ function hasSuspiciousGaps(row: RowGroup): boolean {
 
   const sorted = [...row.items].sort((a, b) => a.x - b.x)
   const avgFontSize = sorted.reduce((s, i) => s + i.fontSize, 0) / sorted.length
-  const minGap = avgFontSize * MIN_GAP_FACTOR
+  const minGap = Math.max(avgFontSize * MIN_GAP_FACTOR, MIN_GAP_ABSOLUTE)
 
   for (let i = 1; i < sorted.length; i++) {
     const gap = sorted[i].x - (sorted[i - 1].x + sorted[i - 1].w)

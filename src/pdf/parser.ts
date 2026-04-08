@@ -10,7 +10,7 @@ import { HEADING_RATIO_H1, HEADING_RATIO_H2, HEADING_RATIO_H3 } from "../types.j
 import { KordocError } from "../utils.js"
 import { parsePageRange } from "../page-range.js"
 import { blocksToMarkdown } from "../table/builder.js"
-import { extractLines, filterPageBorderLines, buildTableGrids, extractCells, mapTextToCells, cellTextToString, type TextItem, type TableGrid, type ExtractedCell } from "./line-detector.js"
+import { extractLines, preprocessLines, filterPageBorderLines, buildTableGrids, extractCells, mapTextToCells, cellTextToString, detectEvenSpacedItems, type TextItem, type TableGrid, type ExtractedCell } from "./line-detector.js"
 import { detectClusterTables, type ClusterItem } from "./cluster-detector.js"
 // polyfill 먼저 (ES 모듈 호이스팅되므로 별도 파일 필수)
 import "./polyfill.js"
@@ -292,15 +292,26 @@ function detectHeadings(blocks: IRBlock[], medianFontSize: number): void {
   }
 }
 
-/** 한글 균등배분 레이아웃의 글자 간 공백 제거 ("기 본 현 황" → "기본현황") */
+/**
+ * 문자열 기반 균등배분 제거.
+ * normalizeItems에서 분해 + 좌표 기반 감지가 주 경로이고, 여기는 안전망.
+ * pdfjs가 이미 합친 "홍 보 담 당 관" 같은 TextItem 문자열에 적용.
+ */
 function collapseEvenSpacing(text: string): string {
+  // 1. 전체가 균등배분: 토큰의 70%가 1글자
   const tokens = text.split(" ")
-  // 토큰의 70% 이상이 1글자(한글/숫자/기호)면 균등배분으로 판단
   const singleCharCount = tokens.filter(t => t.length === 1).length
   if (tokens.length >= 3 && singleCharCount / tokens.length >= 0.7) {
     return tokens.join("")
   }
-  return text
+
+  // 2. 부분 균등배분: 한글 1자가 3개+ 연속 (2자 단어는 건드리지 않음)
+  // "홍 보 담 당 관" → "홍보담당관", "지 역 경 제 과" → "지역경제과"
+  // "중동 사태 대응" (2자 단어)는 매칭 안 됨 → 공백 유지
+  return text.replace(
+    /(?<![가-힣])[가-힣](?: [가-힣\d]){2,}(?![가-힣])/g,
+    match => match.replace(/ /g, ""),
+  )
 }
 
 /**
@@ -309,10 +320,24 @@ function collapseEvenSpacing(text: string): string {
 function shouldDemoteTable(table: IRTable): boolean {
   const allCells = table.cells.flatMap(row => row.map(c => c.text.trim())).filter(Boolean)
   const allText = allCells.join(" ")
+
+  // 텍스트 박스 패턴: 3행 이하 + 3열 이하 + <...> 또는 ㅇ 마커 포함
+  // 공문서 "중점 추진사항" 등 요약 박스
+  if (table.rows <= 3 && table.cols <= 3) {
+    // 빈 셀이 과반 → 텍스트 박스 (테두리 안에 텍스트만 있는 형태)
+    const totalCells = table.rows * table.cols
+    const emptyCells = totalCells - allCells.length
+    if (emptyCells >= totalCells * 0.3) return true
+
+    // 마커 패턴 (ㅇ, □, ○, <> 등) → 텍스트성
+    if (/[□■◆○●▶ㅇ]/.test(allText)) return true
+    if (/<[^>]+>/.test(allText)) return true
+  }
+
   if (allText.length > 200) return false
   // □, ○, ■ 마커 포함 + 3행 이하 → 텍스트성
   if (/[□■◆○●▶]/.test(allText) && table.rows <= 3) return true
-  // 빈 셀이 과반 → 의사 테이블 (텍스트가 우연히 선으로 둘러싸인 경우)
+  // 빈 셀이 과반 → 의사 테이블
   const totalCells = table.rows * table.cols
   const emptyCells = totalCells - allCells.length
   if (table.rows <= 2 && emptyCells > totalCells * 0.5) return true
@@ -321,16 +346,16 @@ function shouldDemoteTable(table: IRTable): boolean {
   return false
 }
 
-/** demote된 테이블을 구조화된 텍스트로 변환 (2열 → "key: value", 그 외 → 줄바꿈) */
+/** demote된 테이블을 구조화된 텍스트로 변환 */
 function demoteTableToText(table: IRTable): string {
   const lines: string[] = []
   for (let r = 0; r < table.rows; r++) {
     const cells = table.cells[r].map(c => c.text.trim()).filter(Boolean)
     if (cells.length === 0) continue
     if (table.cols === 2 && cells.length === 2) {
-      // 2열 테이블 → KV 형식 보존
       lines.push(`${cells[0]} : ${cells[1]}`)
     } else {
+      // 각 셀 텍스트를 공백으로 합침 (br 태그는 줄바꿈으로 유지)
       lines.push(cells.join(" "))
     }
   }
@@ -481,6 +506,10 @@ function extractPageBlocksWithLines(
   let { horizontals, verticals } = extractLines(opList.fnArray, opList.argsArray)
   ;({ horizontals, verticals } = filterPageBorderLines(horizontals, verticals, pageWidth, pageHeight))
 
+  // 1.5단계: 선 전처리 (ODL LinesPreprocessingConsumer 포팅)
+  // 굵은 선 필터 + 근접 평행 선 병합
+  ;({ horizontals, verticals } = preprocessLines(horizontals, verticals))
+
   // 2단계: 선으로 테이블 그리드 구성
   const grids = buildTableGrids(horizontals, verticals)
 
@@ -546,6 +575,8 @@ function extractBlocksWithGrids(
       let text = cellTextToString(cellItems)
       // 셀 안의 페이지 번호 표시 제거 ("- 2 -" 등)
       text = text.replace(/^[\s]*[-–—]\s*\d+\s*[-–—][\s]*$/gm, "").trim()
+      // 셀 텍스트 균등배분 공백 제거 ("경 제 총 괄 반" → "경제총괄반")
+      text = text.split("\n").map(line => collapseEvenSpacing(line)).join("\n")
       irGrid[cell.row][cell.col] = {
         text,
         colSpan: cell.colSpan,
@@ -585,14 +616,22 @@ function extractBlocksWithGrids(
   // 테이블에 속하지 않은 나머지 텍스트 → 일반 블록
   const remaining = items.filter(i => !usedItems.has(i))
   if (remaining.length > 0) {
-    // 위→아래 순서로 정렬
     remaining.sort((a, b) => b.y - a.y || a.x - b.x)
 
-    // 테이블 전/후 텍스트를 Y좌표 기준으로 적절히 배치
-    const textBlocks = detectListBlocks(extractPageBlocksFallback(remaining, pageNum))
+    // XY-Cut으로 왼쪽 본문과 오른쪽 부서명 등을 분리 후 개별 처리
+    const allY = remaining.map(i => i.y)
+    const pageH = Math.max(...allY) - Math.min(...allY)
+    const groups = xyCutOrder(remaining, Math.max(15, pageH * 0.03))
+    const textBlocks: IRBlock[] = []
+    for (const group of groups) {
+      if (group.length === 0) continue
+      const groupBlocks = extractPageBlocksFallback(group, pageNum)
+      for (const b of groupBlocks) textBlocks.push(b)
+    }
+    const finalTextBlocks = detectListBlocks(textBlocks)
 
     // Y좌표 기반으로 테이블과 텍스트를 올바른 순서로 병합
-    const allBlocks = [...blocks, ...textBlocks]
+    const allBlocks = [...blocks, ...finalTextBlocks]
     allBlocks.sort((a, b) => {
       const ay = a.bbox ? (a.bbox.y + a.bbox.height) : 0
       const by = b.bbox ? (b.bbox.y + b.bbox.height) : 0
@@ -751,28 +790,59 @@ function dominantStyle(items: NormItem[]): { fontSize: number; fontName: string 
 }
 
 function normalizeItems(rawItems: PdfTextItem[]): NormItem[] {
-  return rawItems
-    .filter(i => typeof i.str === "string" && i.str.trim() !== "")
-    .map(i => {
-      // transform matrix: [scaleX, skewY, skewX, scaleY, translateX, translateY]
-      // 폰트 크기 ≈ scaleY의 절대값 (일반적으로 transform[3])
-      const scaleY = Math.abs(i.transform[3])
-      const scaleX = Math.abs(i.transform[0])
-      const fontSize = Math.round(Math.max(scaleY, scaleX))
+  const items: NormItem[] = []
 
-      return {
-        text: i.str.trim(),
-        x: Math.round(i.transform[4]),
-        y: Math.round(i.transform[5]),
-        w: Math.round(i.width),
-        h: Math.round(i.height),
-        fontSize,
-        fontName: i.fontName || "",
-        // 0pt 폰트이거나 너비 0 → hidden text (prompt injection 의심)
-        isHidden: fontSize === 0 || (i.width === 0 && i.str.trim().length > 0),
+  for (const i of rawItems) {
+    if (typeof i.str !== "string" || !i.str.trim()) continue
+
+    const scaleY = Math.abs(i.transform[3])
+    const scaleX = Math.abs(i.transform[0])
+    const fontSize = Math.round(Math.max(scaleY, scaleX))
+    const x = Math.round(i.transform[4])
+    const y = Math.round(i.transform[5])
+    const w = Math.round(i.width)
+    const h = Math.round(i.height)
+    const isHidden = fontSize === 0 || (i.width === 0 && i.str.trim().length > 0)
+
+    // 균등배분 TextItem 분해: "홍 보 지 원 반" → 개별 글자 아이템으로
+    const split = splitEvenSpacedItem(i.str.trim(), x, w, fontSize)
+    if (split) {
+      for (const s of split) {
+        items.push({ text: s.text, x: s.x, y, w: s.w, h, fontSize, fontName: i.fontName || "", isHidden })
       }
-    })
-    .sort((a, b) => b.y - a.y || a.x - b.x)
+    } else {
+      items.push({ text: i.str.trim(), x, y, w, h, fontSize, fontName: i.fontName || "", isHidden })
+    }
+  }
+
+  return items.sort((a, b) => b.y - a.y || a.x - b.x)
+}
+
+/**
+ * 균등배분 TextItem 감지 및 분해.
+ * "홍 보 지 원 반" (1자+공백 패턴) → [{text:"홍",x,w}, {text:"보",x,w}, ...]
+ * 분해하면 이후 detectEvenSpacedItems가 좌표 기반으로 정확히 감지할 수 있음.
+ */
+function splitEvenSpacedItem(
+  text: string, itemX: number, itemW: number, fontSize: number,
+): { text: string; x: number; w: number }[] | null {
+  // 한글/숫자 1자 + 공백이 3회+ 반복되는 패턴
+  // "홍 보 지 원 반", "세 무 1 과", "주 요 내 용"
+  if (!/^[가-힣\d](?: [가-힣\d]){2,}$/.test(text)) return null
+
+  const chars = text.split(" ")
+  if (chars.length < 3) return null
+
+  // 글자당 폭 계산 — 전체 width를 글자 수로 나눔
+  const charW = itemW / chars.length
+  // 글자 폭이 너무 크면 균등배분이 아님 (한 글자가 fontSize의 2배 넘으면 이상)
+  if (charW > fontSize * 2) return null
+
+  return chars.map((ch, idx) => ({
+    text: ch,
+    x: Math.round(itemX + idx * charW),
+    w: Math.round(charW * 0.8), // 실제 글자 폭은 간격보다 좁음
+  }))
 }
 
 function groupByY(items: NormItem[]): NormItem[][] {
@@ -861,8 +931,8 @@ function detectColumns(yLines: NormItem[][]): number[] | null {
   // 최소 3개 열이 있어야 테이블로 판별 — 2열은 일반 2단 레이아웃과 구분 불가
   if (peaks.length < 3) return null
 
-  // Step 3: 가까운 피크 병합 — MERGE_TOL 30px (같은 논리 열의 미세 위치 차이 흡수)
-  const MERGE_TOL = 30
+  // Step 3: 가까운 피크 병합 — MERGE_TOL 40px (같은 논리 열의 미세 위치 차이 흡수)
+  const MERGE_TOL = 40
   const merged: { center: number; count: number; minX: number }[] = [peaks[0]]
   for (let i = 1; i < peaks.length; i++) {
     const prev = merged[merged.length - 1]
@@ -879,7 +949,16 @@ function detectColumns(yLines: NormItem[][]): number[] | null {
   }
 
   // 열 경계 = 각 클러스터의 minX (왼쪽 정렬 기준), 병합 후 재검증
-  const columns = merged.filter(c => c.count >= 3).map(c => c.minX)
+  const rawColumns = merged.filter(c => c.count >= 3).map(c => c.minX)
+  if (rawColumns.length < 3) return null
+
+  // 최소 열 폭 검증: 30px 미만인 열은 인접 열과 병합 (한 글자 열 방지)
+  const MIN_DETECT_COL_WIDTH = 30
+  const columns: number[] = [rawColumns[0]]
+  for (let i = 1; i < rawColumns.length; i++) {
+    if (rawColumns[i] - columns[columns.length - 1] < MIN_DETECT_COL_WIDTH) continue
+    columns.push(rawColumns[i])
+  }
   return columns.length >= 3 ? columns : null
 }
 
@@ -1058,6 +1137,22 @@ function buildGridTable(lines: NormItem[][], columns: number[]): string {
     merged.splice(0, headerEnd, headerRow)
   }
 
+  // Step 3.5: 셀 텍스트 균등배분 공백 제거 ("경 제 총 괄 반" → "경제총괄반")
+  for (const row of merged) {
+    for (let c = 0; c < row.length; c++) {
+      if (row[c]) row[c] = collapseEvenSpacing(row[c])
+    }
+  }
+
+  // Step 3.6: 테이블 품질 검증 — 선 없는 fallback 경로에서는 보수적으로
+  const totalCells = merged.length * numCols
+  const filledCells = merged.reduce((s, row) => s + row.filter(c => c).length, 0)
+  // 빈 셀 과반, 행이 2 미만, 또는 3행 이하+7열 이상 → 텍스트로 복원
+  if (filledCells < totalCells * 0.35 || merged.length < 2 ||
+      (merged.length <= 3 && numCols >= 7)) {
+    return merged.map(r => r.filter(c => c).join("\t")).join("\n")
+  }
+
   // Step 4: 마크다운 테이블
   const md: string[] = []
   md.push("| " + merged[0].join(" | ") + " |")
@@ -1075,14 +1170,32 @@ function buildGridTable(lines: NormItem[][], columns: number[]): string {
 function mergeLineSimple(items: NormItem[]): string {
   if (items.length <= 1) return items[0]?.text || ""
   const sorted = [...items].sort((a, b) => a.x - b.x)
+
+  // 좌표 기반 균등배분 감지 (ODL TextLineProcessor 방식)
+  const isEvenSpaced = detectEvenSpacedItems(sorted)
+
   let result = sorted[0].text
   for (let i = 1; i < sorted.length; i++) {
     const gap = sorted[i].x - (sorted[i - 1].x + sorted[i - 1].w)
     const avgFs = (sorted[i].fontSize + sorted[i - 1].fontSize) / 2
-    // 15px+ 갭 = 탭 (열 구분)
-    if (gap > 15) result += "\t"
-    // 매우 작은 갭 — 모든 문자 타입에서 공백 없이 붙임
-    else if (gap < avgFs * 0.15) { /* no space */ }
+
+    // 탭 갭은 항상 탭으로 — 균등배분보다 우선
+    // 기준: fontSize의 2배 이상 또는 30px+ (균등배분 간격은 보통 fontSize*1.5 이하)
+    const tabThreshold = Math.max(avgFs * 2, 30)
+    if (gap > tabThreshold) {
+      result += "\t"
+      result += sorted[i].text
+      continue
+    }
+
+    // 균등배분 구간이면 공백 없이 합침
+    if (isEvenSpaced[i]) {
+      result += sorted[i].text
+      continue
+    }
+
+    // 매우 작은 갭 — 공백 없이 붙임
+    if (gap < avgFs * 0.15) { /* no space */ }
     // 한글 관련 작은 갭 — PDF 문자 개별 배치 잔재
     else if (gap < avgFs * 0.35 && (/[가-힣]$/.test(result) || /^[가-힣]/.test(sorted[i].text))) { /* no space */ }
     // 3px+ 갭 = 공백 (단어 구분)
@@ -1091,6 +1204,9 @@ function mergeLineSimple(items: NormItem[]): string {
   }
   return result
 }
+
+
+
 
 export function cleanPdfText(text: string): string {
   return mergeKoreanLines(
@@ -1104,8 +1220,8 @@ export function cleanPdfText(text: string): string {
       // 문서 마지막 단독 페이지 번호
       .replace(/\n\d{1,4}$/, "")
   )
-    // 본문의 균등배분 스페이스 정리 (테이블/구분선 행 제외)
-    .replace(/^(?!\|).{3,30}$/gm, line => collapseEvenSpacing(line))
+    // 균등배분 문자열 후처리 (pdfjs가 합친 TextItem + buildGridTable 셀 텍스트)
+    .replace(/^(?!\| ---).*$/gm, line => collapseEvenSpacing(line))
     .replace(/\n{3,}/g, "\n\n")
     .trim()
 }
@@ -1384,8 +1500,10 @@ function mergeKoreanLines(text: string): string {
       result[result.length - 1] = prev + " " + currTrimmed
       continue
     }
-    // 기존 한글 줄바꿈 병합
-    if (/[가-힣·,\-]$/.test(prev) && /^[가-힣(]/.test(curr) && !startsWithMarker(curr) && !isStandaloneHeader(prev)) {
+    // 한글 줄바꿈 병합 — 마커(○, □ 등)로 시작하는 이전 줄은 합치지 않음
+    if (/[가-힣·,\-]$/.test(prev) && /^[가-힣(]/.test(curr) &&
+        !startsWithMarker(curr) && !isStandaloneHeader(prev) &&
+        !startsWithMarker(prev)) {
       result[result.length - 1] = prev + " " + curr
     } else {
       result.push(curr)

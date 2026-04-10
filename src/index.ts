@@ -15,6 +15,8 @@ import type { ParseResult, ParseOptions } from "./types.js"
 import { classifyError, toArrayBuffer } from "./utils.js"
 import { fillFormFields } from "./form/filler.js"
 import type { FillResult } from "./form/filler.js"
+import { fillHwpx } from "./form/filler-hwpx.js"
+import type { HwpxFillResult } from "./form/filler-hwpx.js"
 import { blocksToMarkdown } from "./table/builder.js"
 import { markdownToHwpx } from "./hwpx/generator.js"
 
@@ -127,35 +129,40 @@ export async function parseDocx(buffer: ArrayBuffer, options?: ParseOptions): Pr
 
 // ─── 서식 채우기 API ────────────────────────────────
 
-/** 서식 채우기 출력 포맷 */
-export type FillOutputFormat = "markdown" | "hwpx"
+/**
+ * 서식 채우기 출력 포맷
+ * - "markdown": 마크다운 텍스트
+ * - "hwpx": 새로 생성한 HWPX (스타일 초기화)
+ * - "hwpx-preserve": 원본 HWPX ZIP 직접 수정 (스타일 100% 보존, HWPX 입력만 가능)
+ */
+export type FillOutputFormat = "markdown" | "hwpx" | "hwpx-preserve"
 
 /** 서식 채우기 결과 */
 export interface FillFormOutput {
-  /** 채워진 문서 (markdown: string, hwpx: ArrayBuffer) */
+  /** 채워진 문서 (markdown: string, hwpx/hwpx-preserve: ArrayBuffer) */
   output: string | ArrayBuffer
   /** 출력 포맷 */
   format: FillOutputFormat
-  /** 채우기 상세 결과 */
-  fill: FillResult
+  /** 채우기 상세 — filled 필드 목록 + unmatched 라벨 */
+  fill: { filled: import("./types.js").FormField[]; unmatched: string[] }
 }
 
 /**
  * 서식 문서를 파싱하여 필드를 채우고, 원하는 포맷으로 출력.
  *
- * @param input 템플릿 문서 (파일 경로 또는 버퍼)
- * @param values 채울 값 맵 (라벨 → 값)
- * @param outputFormat 출력 포맷 (기본: "markdown")
- * @returns FillFormOutput
+ * - "hwpx-preserve": HWPX 입력 → 원본 ZIP XML 직접 수정 (테두리/폰트/병합 등 100% 보존)
+ * - "hwpx": 아무 포맷 → IRBlock → Markdown → HWPX 생성 (스타일 초기화됨)
+ * - "markdown": 아무 포맷 → IRBlock → Markdown
  *
  * @example
  * ```ts
- * import { fillForm } from "kordoc"
- * const result = await fillForm("신청서.hwp", {
- *   "성명": "홍길동",
- *   "전화번호": "010-1234-5678",
- * }, "hwpx")
- * // result.output → ArrayBuffer (HWPX 파일)
+ * // HWPX 원본 스타일 보존 채우기
+ * const result = await fillForm("신청서.hwpx", { "성명": "홍길동" }, "hwpx-preserve")
+ * writeFileSync("결과.hwpx", Buffer.from(result.output as ArrayBuffer))
+ *
+ * // 아무 포맷 → 마크다운 채우기
+ * const result = await fillForm("신청서.hwp", { "성명": "홍길동" })
+ * console.log(result.output)  // 채워진 마크다운
  * ```
  */
 export async function fillForm(
@@ -163,20 +170,51 @@ export async function fillForm(
   values: Record<string, string>,
   outputFormat: FillOutputFormat = "markdown",
 ): Promise<FillFormOutput> {
-  const parsed = await parse(input)
+  // 입력 버퍼 준비
+  let buffer: ArrayBuffer
+  if (typeof input === "string") {
+    const buf = await readFile(input)
+    buffer = toArrayBuffer(buf)
+  } else if (Buffer.isBuffer(input)) {
+    buffer = toArrayBuffer(input)
+  } else {
+    buffer = input
+  }
+
+  // hwpx-preserve: 원본 HWPX ZIP 직접 수정 (스타일 보존)
+  if (outputFormat === "hwpx-preserve") {
+    const format = detectFormat(buffer)
+    // detectFormat은 ZIP이면 "hwpx" 반환 (XLSX/DOCX 포함), 세분화 필요
+    if (format === "hwpx") {
+      const zipFormat = await detectZipFormat(buffer)
+      if (zipFormat !== "hwpx") {
+        throw new Error(`hwpx-preserve 포맷은 HWPX 입력만 지원합니다 (감지된 포맷: ${zipFormat})`)
+      }
+    } else {
+      throw new Error(`hwpx-preserve 포맷은 HWPX 입력만 지원합니다 (감지된 포맷: ${format})`)
+    }
+    const hwpxResult = await fillHwpx(buffer, values)
+    return {
+      output: hwpxResult.buffer,
+      format: "hwpx-preserve",
+      fill: { filled: hwpxResult.filled, unmatched: hwpxResult.unmatched },
+    }
+  }
+
+  // 일반 경로: parse → IRBlock → fill → output
+  const parsed = await parse(buffer)
   if (!parsed.success) {
     throw new Error(`서식 파싱 실패: ${parsed.error}`)
   }
 
   const fill = fillFormFields(parsed.blocks, values)
+  const markdown = blocksToMarkdown(fill.blocks)
 
   if (outputFormat === "hwpx") {
-    const markdown = blocksToMarkdown(fill.blocks)
     const hwpxBuffer = await markdownToHwpx(markdown)
     return { output: hwpxBuffer, format: "hwpx", fill }
   }
 
-  const markdown = blocksToMarkdown(fill.blocks)
   return { output: markdown, format: "markdown", fill }
 }
 
@@ -186,6 +224,8 @@ export { compare, diffBlocks } from "./diff/compare.js"
 export { extractFormFields, isLabelCell } from "./form/recognize.js"
 export { fillFormFields } from "./form/filler.js"
 export type { FillResult } from "./form/filler.js"
+export { fillHwpx } from "./form/filler-hwpx.js"
+export type { HwpxFillResult } from "./form/filler-hwpx.js"
 export { markdownToHwpx } from "./hwpx/generator.js"
 
 // ─── Re-exports ──────────────────────────────────────

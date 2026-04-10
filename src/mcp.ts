@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 import { readFileSync, writeFileSync, realpathSync, openSync, readSync, closeSync, statSync, mkdirSync } from "fs"
 import { resolve, isAbsolute, extname, dirname } from "path"
-import { parse, detectFormat, blocksToMarkdown, compare, extractFormFields, fillFormFields, markdownToHwpx } from "./index.js"
+import { parse, detectFormat, detectZipFormat, blocksToMarkdown, compare, extractFormFields, fillFormFields, markdownToHwpx, fillHwpx } from "./index.js"
 import { VERSION, toArrayBuffer, sanitizeError, KordocError } from "./utils.js"
 import { extractHwp5MetadataOnly } from "./hwp5/parser.js"
 import { extractHwpxMetadataOnly } from "./hwpx/parser.js"
@@ -412,18 +412,52 @@ server.tool(
 
 server.tool(
   "fill_form",
-  "한국 서식 문서의 빈칸을 채워서 새 문서로 출력합니다. 서식을 파싱하고 레이블에 맞는 값을 입력한 뒤, 마크다운 또는 HWPX로 저장합니다.",
+  "한국 서식 문서의 빈칸을 채워서 새 문서로 출력합니다. hwpx-preserve를 사용하면 원본 서식(테두리, 폰트, 병합 등)을 100% 유지합니다.",
   {
     file_path: z.string().min(1).describe("서식 템플릿 문서의 절대 경로 (HWP, HWPX, PDF, XLSX, DOCX)"),
     fields: z.record(z.string(), z.string()).describe("채울 필드 맵 (라벨 → 값). 예: {\"성명\": \"홍길동\", \"전화번호\": \"010-1234-5678\"}"),
-    output_format: z.enum(["markdown", "hwpx"]).default("markdown").describe("출력 포맷: markdown (기본) 또는 hwpx"),
+    output_format: z.enum(["markdown", "hwpx", "hwpx-preserve"]).default("hwpx-preserve").describe("출력 포맷: hwpx-preserve (원본 스타일 보존, HWPX 전용), hwpx (새 HWPX 생성), markdown"),
     output_path: z.string().optional().describe("출력 파일 저장 경로 (선택). 지정 시 파일로 저장, 미지정 시 텍스트로 반환"),
   },
   async ({ file_path, fields, output_format, output_path }) => {
     try {
       const { buffer } = readValidatedFile(file_path)
 
-      // 1) 파싱
+      // ─── hwpx-preserve: 원본 ZIP 직접 수정 (스타일 보존) ───
+      if (output_format === "hwpx-preserve") {
+        const format = detectFormat(buffer)
+        let isHwpx = format === "hwpx"
+        if (isHwpx) {
+          const zipFormat = await detectZipFormat(buffer)
+          isHwpx = zipFormat === "hwpx"
+        }
+        if (!isHwpx) {
+          return {
+            content: [{ type: "text", text: `hwpx-preserve는 HWPX 파일만 지원합니다 (감지된 포맷: ${format}). hwpx 또는 markdown을 사용하세요.` }],
+            isError: true,
+          }
+        }
+
+        const hwpxResult = await fillHwpx(buffer, fields)
+        const summary = [
+          `채워진 필드: ${hwpxResult.filled.length}개 (원본 스타일 보존)`,
+          hwpxResult.unmatched.length > 0 ? `매칭 실패: ${hwpxResult.unmatched.join(", ")}` : null,
+        ].filter(Boolean).join(" | ")
+
+        if (output_path) {
+          mkdirSync(dirname(resolve(output_path)), { recursive: true })
+          writeFileSync(resolve(output_path), Buffer.from(hwpxResult.buffer))
+          return {
+            content: [{ type: "text", text: `[${summary}]\n\nHWPX 파일 저장 (원본 서식 유지): ${resolve(output_path)}` }],
+          }
+        }
+
+        return {
+          content: [{ type: "text", text: `[${summary}]\n\n⚠️ output_path를 지정하면 원본 서식이 유지된 HWPX 파일로 저장됩니다.` }],
+        }
+      }
+
+      // ─── 일반 경로: parse → fill → output ───
       const result = await parse(buffer)
       if (!result.success) {
         return {
@@ -432,10 +466,7 @@ server.tool(
         }
       }
 
-      // 2) 서식 필드 인식 (미리보기 — 빈칸 포함)
       const formInfo = extractFormFields(result.blocks)
-
-      // 3) 필드 채우기 (서식 필드가 0개여도 시도 — 테이블 라벨 직접 매칭)
       const fillResult = fillFormFields(result.blocks, fields)
 
       if (fillResult.filled.length === 0 && formInfo.fields.length === 0) {
@@ -445,9 +476,7 @@ server.tool(
         }
       }
 
-      // 4) 출력 생성
       const markdown = blocksToMarkdown(fillResult.blocks)
-
       const summary = [
         `채워진 필드: ${fillResult.filled.length}개`,
         fillResult.unmatched.length > 0 ? `매칭 실패: ${fillResult.unmatched.join(", ")}` : null,
@@ -456,7 +485,6 @@ server.tool(
 
       if (output_format === "hwpx") {
         const hwpxBuffer = await markdownToHwpx(markdown)
-
         if (output_path) {
           mkdirSync(dirname(resolve(output_path)), { recursive: true })
           writeFileSync(resolve(output_path), Buffer.from(hwpxBuffer))
@@ -464,14 +492,12 @@ server.tool(
             content: [{ type: "text", text: `[${summary}]\n\nHWPX 파일 저장: ${resolve(output_path)}` }],
           }
         }
-
-        // HWPX는 바이너리라 경로 없으면 마크다운으로 미리보기 제공
         return {
           content: [{ type: "text", text: `[${summary}]\n\n⚠️ output_path를 지정하면 HWPX 파일로 저장됩니다. 미리보기:\n\n${markdown}` }],
         }
       }
 
-      // markdown 출력
+      // markdown
       if (output_path) {
         mkdirSync(dirname(resolve(output_path)), { recursive: true })
         writeFileSync(resolve(output_path), markdown, "utf-8")
@@ -479,7 +505,6 @@ server.tool(
           content: [{ type: "text", text: `[${summary}]\n\n마크다운 파일 저장: ${resolve(output_path)}\n\n${markdown}` }],
         }
       }
-
       return {
         content: [{ type: "text", text: `[${summary}]\n\n${markdown}` }],
       }

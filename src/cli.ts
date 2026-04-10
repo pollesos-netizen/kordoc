@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "fs"
 import { basename, dirname, resolve, extname } from "path"
 import { Command } from "commander"
-import { parse, detectFormat, fillFormFields, extractFormFields, blocksToMarkdown, markdownToHwpx } from "./index.js"
+import { parse, detectFormat, detectZipFormat, fillFormFields, extractFormFields, blocksToMarkdown, markdownToHwpx, fillHwpx } from "./index.js"
 import type { ParseOptions } from "./types.js"
 import { VERSION, toArrayBuffer, sanitizeError } from "./utils.js"
 
@@ -131,11 +131,11 @@ program
 
 program
   .command("fill <template>")
-  .description("서식 문서의 빈칸을 채워서 출력 — kordoc fill 신청서.hwp -f '성명=홍길동,전화=010-1234-5678'")
+  .description("서식 문서의 빈칸을 채워서 출력 — kordoc fill 신청서.hwpx -f '성명=홍길동,전화=010-1234-5678' -o 결과.hwpx")
   .option("-f, --fields <pairs>", "채울 필드 (key=value 쉼표 구분 또는 JSON)")
   .option("-j, --json <path>", "채울 필드 JSON 파일 경로")
   .option("-o, --output <path>", "출력 파일 경로 (확장자로 포맷 결정: .md, .hwpx)")
-  .option("--format <type>", "출력 포맷: markdown (기본) 또는 hwpx", "markdown")
+  .option("--format <type>", "출력 포맷: hwpx-preserve (기본, 원본 스타일 보존), hwpx, markdown", "hwpx-preserve")
   .option("--dry-run", "채우지 않고 서식 필드 목록만 출력")
   .option("--silent", "진행 메시지 숨기기")
   .action(async (template: string, opts) => {
@@ -152,17 +152,14 @@ program
 
       if (!opts.silent) process.stderr.write(`[kordoc] ${basename(absPath)} 파싱 중...\n`)
 
-      const result = await parse(arrayBuffer)
-      if (!result.success) {
-        process.stderr.write(`[kordoc] 파싱 실패: ${result.error}\n`)
-        process.exit(1)
-      }
-
-      // 서식 필드 인식
-      const formInfo = extractFormFields(result.blocks)
-
       // --dry-run: 필드 목록만 출력
       if (opts.dryRun) {
+        const result = await parse(arrayBuffer)
+        if (!result.success) {
+          process.stderr.write(`[kordoc] 파싱 실패: ${result.error}\n`)
+          process.exit(1)
+        }
+        const formInfo = extractFormFields(result.blocks)
         if (formInfo.fields.length === 0) {
           process.stderr.write(`[kordoc] 서식 필드를 찾을 수 없습니다.\n`)
           process.exit(1)
@@ -173,18 +170,15 @@ program
 
       // 필드 값 파싱
       let values: Record<string, string> = {}
-
       if (opts.json) {
         const jsonPath = resolve(opts.json)
         const jsonContent = readFileSync(jsonPath, "utf-8")
         values = JSON.parse(jsonContent)
       } else if (opts.fields) {
         const fieldsStr: string = opts.fields
-        // JSON 형식 시도
         if (fieldsStr.startsWith("{")) {
           values = JSON.parse(fieldsStr)
         } else {
-          // key=value,key=value 형식
           for (const pair of fieldsStr.split(",")) {
             const eqIdx = pair.indexOf("=")
             if (eqIdx > 0) {
@@ -199,13 +193,57 @@ program
         process.exit(1)
       }
 
+      // 출력 포맷 결정
+      let outputFormat = opts.format as string
+      if (opts.output) {
+        const ext = extname(opts.output).toLowerCase()
+        if (ext === ".hwpx") outputFormat = outputFormat === "markdown" ? "hwpx-preserve" : outputFormat
+        else if (ext === ".md") outputFormat = "markdown"
+      }
+
+      // ─── hwpx-preserve: 원본 ZIP 직접 수정 ───
+      if (outputFormat === "hwpx-preserve") {
+        const format = detectFormat(arrayBuffer)
+        let isHwpx = format === "hwpx"
+        if (isHwpx) {
+          const zipFormat = await detectZipFormat(arrayBuffer)
+          isHwpx = zipFormat === "hwpx"
+        }
+        if (!isHwpx) {
+          if (!opts.silent) process.stderr.write(`[kordoc] HWPX가 아니므로 hwpx 모드로 전환합니다\n`)
+          outputFormat = "hwpx"
+        } else {
+          const hwpxResult = await fillHwpx(arrayBuffer, values)
+          if (!opts.silent) {
+            process.stderr.write(`[kordoc] ${hwpxResult.filled.length}개 필드 채움 (원본 스타일 보존)\n`)
+            if (hwpxResult.unmatched.length > 0) {
+              process.stderr.write(`[kordoc] ⚠️ 매칭 실패: ${hwpxResult.unmatched.join(", ")}\n`)
+            }
+          }
+          if (opts.output) {
+            mkdirSync(dirname(resolve(opts.output)), { recursive: true })
+            writeFileSync(resolve(opts.output), Buffer.from(hwpxResult.buffer))
+            if (!opts.silent) process.stderr.write(`[kordoc] → ${resolve(opts.output)}\n`)
+          } else {
+            process.stdout.write(Buffer.from(hwpxResult.buffer))
+          }
+          return
+        }
+      }
+
+      // ─── 일반 경로: parse → fill → output ───
+      const result = await parse(arrayBuffer)
+      if (!result.success) {
+        process.stderr.write(`[kordoc] 파싱 실패: ${result.error}\n`)
+        process.exit(1)
+      }
+
+      const formInfo = extractFormFields(result.blocks)
       if (!opts.silent) {
         process.stderr.write(`[kordoc] 서식 필드 ${formInfo.fields.length}개 감지 (확신도 ${(formInfo.confidence * 100).toFixed(0)}%)\n`)
       }
 
-      // 필드 채우기
       const fillResult = fillFormFields(result.blocks, values)
-
       if (!opts.silent) {
         process.stderr.write(`[kordoc] ${fillResult.filled.length}개 필드 채움\n`)
         if (fillResult.unmatched.length > 0) {
@@ -213,15 +251,6 @@ program
         }
       }
 
-      // 출력 포맷 결정
-      let outputFormat = opts.format as string
-      if (opts.output) {
-        const ext = extname(opts.output).toLowerCase()
-        if (ext === ".hwpx") outputFormat = "hwpx"
-        else if (ext === ".md") outputFormat = "markdown"
-      }
-
-      // 출력 생성
       const markdown = blocksToMarkdown(fillResult.blocks)
 
       if (outputFormat === "hwpx") {
@@ -231,7 +260,6 @@ program
           writeFileSync(resolve(opts.output), Buffer.from(hwpxBuffer))
           if (!opts.silent) process.stderr.write(`[kordoc] → ${resolve(opts.output)}\n`)
         } else {
-          // HWPX 바이너리를 stdout에 출력
           process.stdout.write(Buffer.from(hwpxBuffer))
         }
       } else {

@@ -1505,61 +1505,24 @@ function detectSpecialKoreanTables(blocks: IRBlock[]): IRBlock[] {
 
 // ─── 머리글/바닥글 감지 ────────────────────────────
 
-/** 상단/하단 10% 영역에서 페이지간 반복 텍스트를 감지하여 제거 대상 인덱스 반환 */
+/**
+ * 머리글/바닥글 감지 — 2-pass 하이브리드:
+ *  1) 텍스트 반복 패턴 (숫자 normalization) — 고정 문구
+ *  2) y 위치 클러스터 (±3pt) — 텍스트가 페이지별로 달라도(챕터명 등) 위치가 반복되면 제거
+ */
 function removeHeaderFooterBlocks(
   blocks: IRBlock[],
   pageHeights: Map<number, number>,
   warnings: ParseWarning[],
 ): number[] {
-  const ZONE_RATIO = 0.1 // 상하 10%
-  const MIN_REPEAT = 3   // 최소 3페이지에서 반복
+  const ZONE_RATIO = 0.12   // 상하 12% (10% 초과 여백 대응)
+  const MIN_REPEAT = 3       // 최소 3페이지 반복
+  const Y_BUCKET = 5         // y 좌표 클러스터링 버킷 (pt)
 
-  // 페이지별 상단/하단 텍스트 수집
-  const headerTexts = new Map<number, string[]>() // page → texts
-  const footerTexts = new Map<number, string[]>()
+  type ZoneEntry = { blockIdx: number; page: number; y: number; text: string }
+  const topEntries: ZoneEntry[] = []
+  const bottomEntries: ZoneEntry[] = []
 
-  for (let bi = 0; bi < blocks.length; bi++) {
-    const b = blocks[bi]
-    if (!b.bbox || !b.pageNumber || !b.text?.trim()) continue
-    const ph = pageHeights.get(b.bbox.page) || pageHeights.get(b.pageNumber)
-    if (!ph) continue
-
-    const blockTop = ph - (b.bbox.y + b.bbox.height) // PDF Y좌표는 아래가 0
-    const blockBottom = ph - b.bbox.y
-
-    if (blockBottom <= ph * ZONE_RATIO) {
-      // 하단 영역
-      const arr = footerTexts.get(b.pageNumber) || []
-      arr.push(b.text.trim())
-      footerTexts.set(b.pageNumber, arr)
-    } else if (blockTop >= ph * (1 - ZONE_RATIO)) {
-      // 상단 영역
-      const arr = headerTexts.get(b.pageNumber) || []
-      arr.push(b.text.trim())
-      headerTexts.set(b.pageNumber, arr)
-    }
-  }
-
-  // 반복 패턴 찾기: 페이지 번호 변동 허용 (숫자만 다른 경우)
-  const repeatedPatterns = new Set<string>()
-  for (const textsMap of [headerTexts, footerTexts]) {
-    const patternCount = new Map<string, number>()
-    for (const [, texts] of textsMap) {
-      for (const t of texts) {
-        // 숫자를 와일드카드로 치환하여 "- 1 -", "- 2 -" 같은 패턴 통합
-        const normalized = t.replace(/\d+/g, "#")
-        patternCount.set(normalized, (patternCount.get(normalized) || 0) + 1)
-      }
-    }
-    for (const [pattern, count] of patternCount) {
-      if (count >= MIN_REPEAT) repeatedPatterns.add(pattern)
-    }
-  }
-
-  if (repeatedPatterns.size === 0) return []
-
-  // 반복 패턴에 매칭되는 블록 인덱스 수집
-  const removeIndices: number[] = []
   for (let bi = 0; bi < blocks.length; bi++) {
     const b = blocks[bi]
     if (!b.bbox || !b.pageNumber || !b.text?.trim()) continue
@@ -1568,20 +1531,63 @@ function removeHeaderFooterBlocks(
 
     const blockTop = ph - (b.bbox.y + b.bbox.height)
     const blockBottom = ph - b.bbox.y
-    const inZone = blockBottom <= ph * ZONE_RATIO || blockTop >= ph * (1 - ZONE_RATIO)
-    if (!inZone) continue
+    const entry: ZoneEntry = { blockIdx: bi, page: b.pageNumber, y: b.bbox.y, text: b.text.trim() }
 
-    const normalized = b.text.trim().replace(/\d+/g, "#")
-    if (repeatedPatterns.has(normalized)) {
-      removeIndices.push(bi)
+    if (blockBottom <= ph * ZONE_RATIO) bottomEntries.push(entry)
+    else if (blockTop >= ph * (1 - ZONE_RATIO)) topEntries.push(entry)
+  }
+
+  const removeSet = new Set<number>()
+
+  for (const entries of [topEntries, bottomEntries]) {
+    if (entries.length === 0) continue
+
+    // (1) 텍스트 반복 패턴
+    const patternCount = new Map<string, number>()
+    const patternPages = new Map<string, Set<number>>()
+    for (const e of entries) {
+      const norm = e.text.replace(/\d+/g, "#")
+      patternCount.set(norm, (patternCount.get(norm) || 0) + 1)
+      const pages = patternPages.get(norm) || new Set<number>()
+      pages.add(e.page)
+      patternPages.set(norm, pages)
+    }
+    const repeatedPatterns = new Set<string>()
+    for (const [p, count] of patternCount) {
+      // 서로 다른 페이지에서 MIN_REPEAT번 이상 등장
+      if (count >= MIN_REPEAT && (patternPages.get(p)?.size ?? 0) >= MIN_REPEAT) {
+        repeatedPatterns.add(p)
+      }
+    }
+
+    // (2) y 위치 클러스터 — bucket별 등장 페이지 수
+    const bucketPages = new Map<number, Set<number>>()
+    for (const e of entries) {
+      const bucket = Math.round(e.y / Y_BUCKET)
+      const pages = bucketPages.get(bucket) || new Set<number>()
+      pages.add(e.page)
+      bucketPages.set(bucket, pages)
+    }
+    const repeatedBuckets = new Set<number>()
+    for (const [b, pages] of bucketPages) {
+      if (pages.size >= MIN_REPEAT) repeatedBuckets.add(b)
+    }
+
+    // 제거 대상: 텍스트 반복 OR 위치 반복
+    for (const e of entries) {
+      const norm = e.text.replace(/\d+/g, "#")
+      const bucket = Math.round(e.y / Y_BUCKET)
+      if (repeatedPatterns.has(norm) || repeatedBuckets.has(bucket)) {
+        removeSet.add(e.blockIdx)
+      }
     }
   }
 
-  if (removeIndices.length > 0) {
-    warnings.push({ message: `${removeIndices.length}개 머리글/바닥글 요소 제거됨`, code: "HIDDEN_TEXT_FILTERED" })
+  if (removeSet.size > 0) {
+    warnings.push({ message: `${removeSet.size}개 머리글/바닥글 요소 제거됨`, code: "HIDDEN_TEXT_FILTERED" })
   }
 
-  return removeIndices
+  return [...removeSet].sort((a, b) => a - b)
 }
 
 function mergeKoreanLines(text: string): string {

@@ -31,10 +31,16 @@ export function extractTextViaCom(filePath: string): { pages: string[]; pageCoun
   }
 
   // PowerShell 스크립트를 인라인으로 실행
-  // - RegisterModule: 보안 경고 억제 (DLL 미등록 환경에서 silent fail)
-  // - SetMessageBoxMode: 내부 메시지박스 자동 응답
-  // - 백그라운드 워처 runspace: FilePathChecker 다이얼로그(#32770 "한글")를
-  //   감지하는 즉시 Enter 전송하여 기본 버튼 "접근 허용(Y)" 자동 클릭
+  //
+  // 핵심 우회: 파일을 %TEMP%로 복사한 뒤 해당 경로로 Open.
+  //   한컴 오피스는 파일 경로가 "신뢰 영역"(사용자 Temp/AppData 등) 밖일 때
+  //   FilePathChecker가 경고 팝업을 띄운다. FilePathCheckerModuleExample DLL이
+  //   등록된 개발 환경에서는 RegisterModule이 작동해 경고가 억제되지만, 일반
+  //   사용자 환경에는 해당 DLL이 없다.
+  //   %TEMP% 하위 경로로 복사하면 신뢰 영역 규칙에 의해 경고가 나오지 않아
+  //   DLL 등록 없이도 안정적으로 DRM 텍스트를 추출할 수 있다.
+  //
+  // - RegisterModule: 보안 경고 1차 억제(DLL 없어도 해가 없음)
   // - GetPageText: DRM 우회 텍스트 추출
   // filePath를 single-quote로 이스케이프 (내부 ' → '')
   const escaped = filePath.replace(/'/g, "''")
@@ -42,41 +48,16 @@ export function extractTextViaCom(filePath: string): { pages: string[]; pageCoun
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
-Add-Type -Namespace HwpAuto -Name Win -MemberDefinition @'
-[DllImport("user32.dll", CharSet=CharSet.Unicode)]
-public static extern System.IntPtr FindWindow(string lpClassName, string lpWindowName);
-[DllImport("user32.dll")]
-public static extern bool PostMessage(System.IntPtr hWnd, uint Msg, System.IntPtr wParam, System.IntPtr lParam);
-[DllImport("user32.dll")]
-public static extern bool IsWindowVisible(System.IntPtr hWnd);
-'@ -ErrorAction SilentlyContinue
-
-# 한글 보안 경고 다이얼로그 자동 닫기 워처 (별도 runspace)
-$rs = [runspacefactory]::CreateRunspace()
-$rs.Open()
-$ps = [powershell]::Create()
-$ps.Runspace = $rs
-[void]$ps.AddScript({
-  $endAt = (Get-Date).AddSeconds(150)
-  while ((Get-Date) -lt $endAt) {
-    # #32770 = 표준 Win32 다이얼로그 클래스, 타이틀 '한글' = 보안 경고 팝업
-    $h = [HwpAuto.Win]::FindWindow('#32770', '한글')
-    if ($h -ne [IntPtr]::Zero -and [HwpAuto.Win]::IsWindowVisible($h)) {
-      # WM_KEYDOWN (0x100) / WM_KEYUP (0x101) + VK_RETURN (0x0D) = 기본 버튼 클릭
-      [void][HwpAuto.Win]::PostMessage($h, 0x100, [IntPtr]0x0D, [IntPtr]0)
-      Start-Sleep -Milliseconds 30
-      [void][HwpAuto.Win]::PostMessage($h, 0x101, [IntPtr]0x0D, [IntPtr]0)
-    }
-    Start-Sleep -Milliseconds 120
-  }
-})
-$async = $ps.BeginInvoke()
+$src = '${escaped}'
+$tmpDir = Join-Path $env:TEMP ('hwp-com-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $tmpDir -Force)
+$tmpFile = Join-Path $tmpDir (Split-Path $src -Leaf)
+Copy-Item -LiteralPath $src -Destination $tmpFile -Force
 
 try {
   $hwp = New-Object -ComObject HWPFrame.HwpObject
-  try { $hwp.SetMessageBoxMode(0xFFFF0001) | Out-Null } catch { }
   $hwp.RegisterModule('FilePathCheckerModule', 'FilePathCheckerModuleExample') | Out-Null
-  $hwp.Open('${escaped}', '', '') | Out-Null
+  $hwp.Open($tmpFile, '', '') | Out-Null
   $pc = $hwp.PageCount
   $result = @{ pageCount = $pc; pages = @() }
   for ($p = 1; $p -le $pc; $p++) {
@@ -89,10 +70,7 @@ try {
 } catch {
   @{ error = $_.Exception.Message } | ConvertTo-Json -Compress
 } finally {
-  try { $ps.Stop() | Out-Null } catch {}
-  try { $ps.Dispose() } catch {}
-  try { $rs.Close() } catch {}
-  try { $rs.Dispose() } catch {}
+  try { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
 `
 

@@ -114,7 +114,7 @@ export function mdToPlain(md) {
   return { text: s, eqCount, footnoteCount }
 }
 
-/** PDF 추출 텍스트 공통 정규화 — 리거처 분해 + 하이픈 줄바꿈 결합 + normKey */
+/** PDF 추출 텍스트 공통 정규화 — 리거처 분해 + 하이픈 줄바꿈 결합 + normKey + 리더 도트 붕괴 */
 export function normPdf(s) {
   if (!s) return ""
   return normKey(
@@ -123,4 +123,9 @@ export function normPdf(s) {
       .replace(/ﬃ/g, "ffi").replace(/ﬄ/g, "ffl")
       .replace(/(\S)-[ \t]*\n[ \t]*(?=[a-z가-힣])/g, "$1")
   )
+    // 목차 리더 점선(····· / .....)은 시각 필러 — 추출기마다 도트 개수가 달라
+    // 커버리지를 왜곡하므로 런을 '·' 1개로 붕괴. 참조/출력 동일 경로라 대칭 (pitfall #9).
+    // ASCII '.'은 3개+만 (소수점 보호), 가운뎃점/말줄임 계열은 2개+.
+    .replace(/[.．·‧‥…⋯]{3,}/g, "·")
+    .replace(/[·‧‥…⋯]{2,}/g, "·")
 }

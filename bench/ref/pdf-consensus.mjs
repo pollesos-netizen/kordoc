@@ -87,29 +87,79 @@ async function pdfjsPages(buffer) {
   return pages
 }
 
-/** 전 페이지 반복 라인(머리글/바닥글) 제거 — ≥ratio 페이지에 등장하는 정규화 라인 (pitfall #13) */
+/**
+ * 반복 라인(머리글/바닥글) 제거 (pitfall #13) — 두 갈래:
+ * (1) 전 문서 ≥ratio 페이지 반복 정규화 라인 → 위치 무관 제거 (기존)
+ * (2) 페이지 가장자리(첫/끝 2개 비어있지 않은 줄) 라인이 ≥3개 페이지에서 반복
+ *     → 가장자리 위치의 인스턴스만 제거.
+ *     파서의 머리글/바닥글 제거(상하 12% 존 + 3페이지 반복)와 대칭을 맞추기 위한 것 —
+ *     챕터별로 바뀌는 러닝헤더는 전 문서 70%에 못 미쳐 (1)이 못 잡는다.
+ *     본문 중간의 동일 문구는 남겨서 파서의 본문 오삭제는 계속 감지한다.
+ */
 function dropRepeatedLines(pages, ratio = 0.7) {
   if (pages.length < 3) return pages
-  const lineCount = new Map()
   const norm = l => normText(l).replace(/\d+/g, "#") // 페이지번호 가변부 무시
-  for (const pg of pages) {
+  const pageLines = pages.map(pg => pg.split("\n"))
+
+  const lineCount = new Map() // 정규화 라인 → 등장 페이지 수 (위치 무관)
+  const edgeCount = new Map() // 정규화 라인 → 가장자리 등장 페이지 수
+  const edgeIdxSets = []      // 페이지별 가장자리 라인 인덱스
+  for (const lines of pageLines) {
     const seen = new Set()
-    for (const line of pg.split("\n")) {
-      const k = norm(line)
-      if (k.length >= 2 && !seen.has(k)) { seen.add(k); lineCount.set(k, (lineCount.get(k) ?? 0) + 1) }
+    const nonEmpty = []
+    for (let i = 0; i < lines.length; i++) {
+      const k = norm(lines[i])
+      if (k.length < 2) continue
+      nonEmpty.push(i)
+      if (!seen.has(k)) { seen.add(k); lineCount.set(k, (lineCount.get(k) ?? 0) + 1) }
+    }
+    const edgeIdx = new Set([...nonEmpty.slice(0, 2), ...nonEmpty.slice(-2)])
+    edgeIdxSets.push(edgeIdx)
+    const seenEdge = new Set()
+    for (const i of edgeIdx) {
+      const k = norm(lines[i])
+      if (!seenEdge.has(k)) { seenEdge.add(k); edgeCount.set(k, (edgeCount.get(k) ?? 0) + 1) }
     }
   }
+
   const threshold = Math.ceil(pages.length * ratio)
-  const repeated = new Set([...lineCount.entries()].filter(([, n]) => n >= threshold).map(([k]) => k))
-  if (repeated.size === 0) return pages
-  return pages.map(pg => pg.split("\n").filter(l => !repeated.has(norm(l))).join("\n"))
+  const repeatedAll = new Set([...lineCount.entries()].filter(([, n]) => n >= threshold).map(([k]) => k))
+  const repeatedEdge = new Set([...edgeCount.entries()].filter(([, n]) => n >= 3).map(([k]) => k))
+  if (repeatedAll.size === 0 && repeatedEdge.size === 0) return pages
+
+  return pageLines.map((lines, pi) =>
+    lines.filter((l, li) => {
+      const k = norm(l)
+      if (repeatedAll.has(k)) return false
+      if (repeatedEdge.has(k) && edgeIdxSets[pi].has(li)) return false
+      return true
+    }).join("\n"))
 }
 
-/** 문자 3-gram multiset (normPdf 적용 후) — Map<gram, count> */
-function trigramBag(texts) {
+/**
+ * 문자 3-gram multiset (normPdf 적용 후) — Map<gram, count>
+ *
+ * perLine: 참조(추출기) 텍스트는 줄 단위로 gram을 계산한다.
+ * 줄 경계를 넘는 gram은 문서 내용이 아니라 추출기의 순회 순서(셀 방문 순서,
+ * 단 병합 순서)를 인코딩한 것 — 파일 서두의 "순서 비교 금지" 원칙의 잔존 누수였다.
+ * (예: pdftotext가 "산출식=" 줄 다음 "16,422" 줄을 붙여 '=16' gram을 만들면
+ * 셀 순서가 다른 파서는 내용 손실 없이도 벌점을 받는다.)
+ * kordoc 측은 전체 텍스트로 계산 유지 — 초과 gram은 커버리지에 벌점이 없고,
+ * 문단 리플로우(참조의 여러 줄 = kordoc 한 줄)를 흡수해야 하므로.
+ */
+function trigramBag(texts, { perLine = false } = {}) {
   const bag = new Map()
+  const chunks = []
   for (const t of texts) {
-    const s = normPdf(t)
+    if (perLine) {
+      // 하이픈 줄바꿈 결합은 줄 분리 전에 (normPdf 내 동일 규칙은 줄 단위에선 no-op)
+      chunks.push(...t.replace(/(\S)-[ \t]*\n[ \t]*(?=[a-z가-힣])/g, "$1").split("\n"))
+    } else {
+      chunks.push(t)
+    }
+  }
+  for (const c of chunks) {
+    const s = normPdf(c)
     for (let i = 0; i + 3 <= s.length; i++) {
       const g = s.substr(i, 3)
       bag.set(g, (bag.get(g) ?? 0) + 1)
@@ -156,9 +206,9 @@ export async function pdfCrossCoverage(filePath, buffer, kordocPlainText, needsO
   let consensus
   let weak = false
   if (a && b) {
-    consensus = intersectBag(trigramBag(a), trigramBag(b))
+    consensus = intersectBag(trigramBag(a, { perLine: true }), trigramBag(b, { perLine: true }))
   } else {
-    consensus = trigramBag(a ?? b)
+    consensus = trigramBag(a ?? b, { perLine: true })
     weak = true // 단일 추출기 — 보고만, 게이트 제외
   }
 

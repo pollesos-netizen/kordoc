@@ -38,15 +38,12 @@
 | no-op 라운드트립 | 88/88 | 88 | |
 | 테스트 / tsc | 632/632 / 에러 13(동수) | — | 회전표 4종 아님, 2단조판 4종 추가 |
 
-## 다음 후보 (우선순위순)
+## 다음 세션 = 검증 전면 확장 → 전 영역 100점
 
-1. **pdf 성능**: changwon-plan2026 22.4ms/p(타 문서 2~3배) 프로파일 → 핫패스
-   (groupByY/mergeLineSimple/buildVertices/cluster) 개선. perf.mjs pdf 트랙으로 전/후 측정
-2. **회전 표 읽기 순서** — khs p770 계속비 표. 회전 그룹([0,s,-s,0]류)별 좌표 리맵(x↔y) 후
-   기존 라인 그룹핑 재사용. bbox-존 필터 충돌 주의 (위험高 — 게이트 재확인 짧게)
-3. **폼 인식 pdf 과발화 관찰**: perf에서 pdf 39건 66,243필드 — recognizeForm이 pdf 표에
-   과하게 발화하는 것으로 보임(관찰만, 실사용 영향 미확인)
-4. 기능 백로그(표 열/병합 변경, 1x1·1열 표 행 연산, HWP5 행 추가/삭제) 중 선별
+**`.claude/plans/next-session-full-score.md` 읽고 시작** (구 next-session-perf-debt.md 대체).
+Phase A: 채점 사각지대 신규 검증 신설(pdf 표 구조·생성 라운드트립·hwp5 게이트 승격·
+docx/xlsx/hwp3/hwpml 트랙·폼 정오·fuzz 스윕) → Phase B: 미달 전수 개선
+(cellExact/contentNED 특정, eval-perf-2024 OCR, changwon 22.4ms/p 프로파일, 회전 표)
 
 ## 남은 백로그 (전부 저순위)
 

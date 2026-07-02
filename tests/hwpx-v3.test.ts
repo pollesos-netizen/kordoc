@@ -305,6 +305,29 @@ describe("hwpx v3 — 글상자+이미지 병행, 셀 안 이미지", () => {
 
     assert.ok(result.markdown.includes("고온 스트레스 저감용 첨가제"), `그림 캡션 보존: ${result.markdown}`)
   })
+
+  it("같은 ref를 참조하는 다수 image 블록 — 1회만 해제·데이터 공유 (대량 참조 메모리 폭발 방지)", async () => {
+    const pics = [1, 2, 3].map(i => `<hp:pic id="${i}"><hp:img binaryItemIDRef="image1"/></hp:pic>`).join("")
+    const body = `<hp:p id="0"><hp:run>${pics}</hp:run></hp:p>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(body), { binData: { "BinData/image1.png": PNG_STUB } }))
+
+    assert.equal(result.images?.length, 1, "같은 ref는 1건만 추출")
+    const imgs = result.blocks.filter(b => b.type === "image")
+    assert.equal(imgs.length, 3, "블록은 참조 수만큼 유지")
+    for (const b of imgs) assert.equal(b.text, "image_001.png", "모든 블록이 같은 파일명 참조")
+    assert.equal(imgs[0].imageData!.data, imgs[1].imageData!.data, "데이터 버퍼 공유 (복사 1벌)")
+    assert.equal(result.images![0].data, imgs[2].imageData!.data)
+  })
+
+  it("없는 ref 다수 참조 — 실패도 캐시해 SKIPPED_IMAGE 경고 1회", async () => {
+    const pics = [1, 2].map(i => `<hp:pic id="${i}"><hp:img binaryItemIDRef="missing"/></hp:pic>`).join("")
+    const body = `<hp:p id="0"><hp:run>${pics}</hp:run></hp:p>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(body)))
+
+    assert.equal(result.warnings?.filter(w => w.code === "SKIPPED_IMAGE").length, 1, "경고는 ref당 1회")
+    assert.equal(result.blocks.filter(b => b.type === "paragraph" && b.text === "[이미지: missing]").length, 2,
+      "실패 블록은 각각 paragraph로 전환")
+  })
 })
 
 describe("hwpx v3 — 변경추적/메모/숨은텍스트", () => {

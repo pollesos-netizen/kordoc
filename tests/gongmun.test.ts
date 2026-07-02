@@ -148,6 +148,51 @@ describe("gongmun 렌더링", () => {
     assert.ok(texts.includes("2. 둘째 항목"))
   })
 
+  it("리스트 사이 표가 끼어도 번호 run 지속 (공문 관행)", async () => {
+    const withTable = `1. 첫째 항목
+2. 둘째 항목
+
+| 구분 | 내용 |
+| --- | --- |
+| A | B |
+
+3. 셋째 항목`
+    const texts = await sectionTexts(await markdownToHwpx(withTable, { gongmun: { preset: "official" } }))
+    assert.ok(texts.includes("1. 첫째 항목"))
+    assert.ok(texts.includes("2. 둘째 항목"))
+    assert.ok(texts.includes("3. 셋째 항목"), `표 사이 항목번호가 이어져야 함: ${texts}`)
+  })
+
+  it("하위 항목 사이 표 — 깊이별 카운터도 지속", async () => {
+    const withTable = `1. 첫째
+  - 하나
+
+| A | B |
+| --- | --- |
+| 1 | 2 |
+
+  - 둘
+2. 둘째`
+    const texts = await sectionTexts(await markdownToHwpx(withTable, { gongmun: { preset: "official" } }))
+    assert.ok(texts.includes("가. 하나"), `하위 첫 항목: ${texts}`)
+    assert.ok(texts.includes("나. 둘"), `표 뒤 하위 항목이 나.로 이어져야 함: ${texts}`)
+    assert.ok(texts.includes("2. 둘째"))
+  })
+
+  it("리스트 뒤 본문 문단은 run을 끊는다 (표만 예외)", async () => {
+    const withPara = `1. 첫째 항목
+2. 둘째 항목
+
+일반 본문 문단입니다.
+
+1. 새 첫째
+2. 새 둘째`
+    const texts = await sectionTexts(await markdownToHwpx(withPara, { gongmun: { preset: "official" } }))
+    assert.ok(texts.includes("1. 첫째 항목"))
+    assert.ok(texts.includes("1. 새 첫째"), `문단으로 끊긴 리스트는 1.부터 재시작: ${texts}`)
+    assert.ok(texts.includes("2. 새 둘째"))
+  })
+
   it("공식 여백(위20/아래10/좌20/우20) + 머리말·꼬리말 0", async () => {
     const buf = await markdownToHwpx("# 제목\n\n본문", { gongmun: { preset: "official" } })
     const zip = await JSZip.loadAsync(buf)

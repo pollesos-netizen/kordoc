@@ -891,9 +891,19 @@ function precomputeGongmunList(
   let i = 0
   while (i < blocks.length) {
     if (blocks[i].type !== "list_item") { i++; continue }
-    // 연속 run 수집
+    // 연속 run 수집 — 항목 사이에 낀 표는 run을 끊지 않는다 (공문 관행: 항목 아래
+    // 근거 표를 붙이고 다음 항목 번호가 이어짐). 표 뒤에 항목이 없으면 거기서 종료.
     const run: number[] = []
-    while (i < blocks.length && blocks[i].type === "list_item") { run.push(i); i++ }
+    while (i < blocks.length) {
+      const t = blocks[i].type
+      if (t === "list_item") { run.push(i); i++; continue }
+      if (t === "table" || t === "html_table") {
+        let j = i + 1
+        while (j < blocks.length && (blocks[j].type === "table" || blocks[j].type === "html_table")) j++
+        if (j < blocks.length && blocks[j].type === "list_item") { i = j; continue }
+      }
+      break
+    }
     const depths = run.map((bi) => Math.min(Math.max(blocks[bi].indent || 0, 0), GONGMUN_LIST_LEVELS - 1))
     // 단일 형제 부호 생략은 법정 번호(standard)에만. 불릿(report)은 항상 표시.
     const suppress = gongmun.numbering === "standard"

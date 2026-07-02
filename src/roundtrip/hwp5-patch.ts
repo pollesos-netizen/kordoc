@@ -92,15 +92,18 @@ function readRecordsStrict(stream: Buffer): RawRecord[] | null {
   return recs
 }
 
-function serializeRecords(recs: RawRecord[], repl?: Map<number, Buffer>): Buffer {
+function serializeRecords(recs: RawRecord[], repl?: Map<number, Buffer>, inserts?: Map<number, RawRecord[]>): Buffer {
   const parts: Buffer[] = []
-  for (let i = 0; i < recs.length; i++) {
-    const data = repl?.get(i) ?? recs[i].data
+  const push = (tagId: number, level: number, data: Buffer) => {
     const ext = data.length >= 0xfff
     const header = Buffer.alloc(ext ? 8 : 4)
-    header.writeUInt32LE(((recs[i].tagId & 0x3ff) | ((recs[i].level & 0x3ff) << 10) | ((ext ? 0xfff : data.length) << 20)) >>> 0, 0)
+    header.writeUInt32LE(((tagId & 0x3ff) | ((level & 0x3ff) << 10) | ((ext ? 0xfff : data.length) << 20)) >>> 0, 0)
     if (ext) header.writeUInt32LE(data.length, 4)
     parts.push(header, data)
+  }
+  for (let i = 0; i < recs.length; i++) {
+    for (const ins of inserts?.get(i) ?? []) push(ins.tagId, ins.level, ins.data)
+    push(recs[i].tagId, recs[i].level, repl?.get(i) ?? recs[i].data)
   }
   return Buffer.concat(parts)
 }
@@ -141,11 +144,13 @@ interface SectionScan5 {
   compressed: boolean
   /** 수정 스테이징: 레코드 인덱스 → 새 데이터 */
   repl: Map<number, Buffer>
+  /** 삽입 스테이징: 레코드 인덱스 → 그 레코드 앞에 삽입할 신규 레코드들 */
+  inserts: Map<number, RawRecord[]>
 }
 
 function scanSection(stream: Buffer, sectionIndex: number, compressed: boolean): SectionScan5 {
   const records = readRecordsStrict(stream)
-  if (!records) return { records: [], safe: false, paras: [], tables: [], compressed, repl: new Map() }
+  if (!records) return { records: [], safe: false, paras: [], tables: [], compressed, repl: new Map(), inserts: new Map() }
   const safe = serializeRecords(records).equals(stream)
 
   // 부모 인덱스 계산 (level 기반 스택)
@@ -246,7 +251,7 @@ function scanSection(stream: Buffer, sectionIndex: number, compressed: boolean):
     tables.push({ sectionIndex, rows, cols, cells })
   }
 
-  return { records, safe, paras, tables, compressed, repl: new Map() }
+  return { records, safe, paras, tables, compressed, repl: new Map(), inserts: new Map() }
 }
 
 // ─── 메인 API ────────────────────────────────────────
@@ -341,15 +346,15 @@ export async function patchHwp(
   // 6) 섹션 재직렬화 + 재압축 + 섹터 레벨 in-place 교체 — 컨테이너 전체 재조립 없음
   //    (수정된 섹션의 데이터 섹터/FAT 체인/디렉토리 start·size 외에는 원본 바이트 유지)
   let data: Uint8Array
-  const dirty = scans.some(s => s.repl.size > 0)
+  const dirty = scans.some(s => s.repl.size > 0 || s.inserts.size > 0)
   if (!dirty) {
     data = new Uint8Array(original)
   } else {
     try {
       let out = originalBuf
       for (let i = 0; i < scans.length; i++) {
-        if (scans[i].repl.size === 0) continue
-        const newStream = serializeRecords(scans[i].records, scans[i].repl)
+        if (scans[i].repl.size === 0 && scans[i].inserts.size === 0) continue
+        const newStream = serializeRecords(scans[i].records, scans[i].repl, scans[i].inserts)
         const content = compressed ? deflateRawSync(newStream) : newStream
         out = replaceOleStream(out, sectionPaths[i], content)
       }
@@ -767,28 +772,30 @@ function applyCellEdit5(
   const unstable = newLines.find(l => sanitizeText(l) !== l)
   if (unstable !== undefined) return skip("공백 정규화 불안정 텍스트 — 패치 시 원문 보존 불가로 미지원")
 
-  if (nonEmpty.length === 0) return skip("빈 셀 텍스트 채우기는 HWP5 미지원 (v1) — 문단 생성 필요")
+  // 빈 셀(모든 문단이 빈)은 빈 문단들 자체가 채움 대상 — stageParaPatch가 빈 문단 채우기를 지원
+  const targets = nonEmpty.length > 0 ? nonEmpty : cell.paras
+  if (targets.length === 0) return skip("셀에 문단이 없음 — 미지원")
 
   // 라인 → 문단 순서 매핑 (넘치는 줄은 마지막 문단에 병합, 줄어든 줄은 비움)
   const assigned: string[] = []
-  for (let i = 0; i < nonEmpty.length; i++) {
+  for (let i = 0; i < targets.length; i++) {
     if (i < newLines.length) {
-      assigned.push(i === nonEmpty.length - 1 && newLines.length > nonEmpty.length
+      assigned.push(i === targets.length - 1 && newLines.length > targets.length
         ? newLines.slice(i).join(" ")
         : newLines[i])
     } else {
       assigned.push("")
     }
   }
-  if (newLines.length > nonEmpty.length) {
+  if (newLines.length > targets.length) {
     ctx.skipped.push({ reason: "셀 내 줄 추가는 문단 생성 미지원 — 마지막 문단에 병합 적용", after: summarize(after), partial: true })
   } else if (newLines.length < nonEmpty.length && nonEmpty.length > 1) {
     ctx.skipped.push({ reason: "셀 내 줄 삭제는 문단 제거 미지원 — 빈 문단 잔존(뷰어에 빈 줄 표시 가능)", before: summarize(before), after: summarize(after), partial: true })
   }
   let staged = 0
-  for (let i = 0; i < nonEmpty.length; i++) {
-    if (assigned[i] === nonEmpty[i].rawText || normForMatch(assigned[i]) === normForMatch(nonEmpty[i].rawText)) continue
-    staged += stageParaPatch(ctx.scans[nonEmpty[i].sectionIndex], nonEmpty[i], assigned[i], skip)
+  for (let i = 0; i < targets.length; i++) {
+    if (assigned[i] === targets[i].rawText || normForMatch(assigned[i]) === normForMatch(targets[i].rawText)) continue
+    staged += stageParaPatch(ctx.scans[targets[i].sectionIndex], targets[i], assigned[i], skip)
   }
   return staged > 0 ? 1 : 0
 }
@@ -863,7 +870,20 @@ export function splitParaText(data: Buffer):
 
   let firstP = -1, lastP = -1
   for (let k = 0; k < toks.length; k++) if (toks[k].plain) { if (firstP < 0) firstP = k; lastP = k }
-  if (firstP < 0) return null                                                      // 일반 텍스트 없음
+  if (firstP < 0) {
+    // 일반 텍스트가 전혀 없는 문단(빈/개체만) — 가시 control이 있으면 위치 모호로 미지원.
+    // 문단끝(0x0d)부터를 suffix로 삼아 새 텍스트가 [선두 개체 뒤, 문단끝 앞]에 들어가게 한다.
+    if (toks.some(t => t.visible)) return null
+    let cut = data.length
+    for (const t of toks) if (data.readUInt16LE(t.start) === 0x0d) { cut = t.start; break }
+    return {
+      prefix: data.subarray(0, cut),
+      prefixUnits: cut / 2,
+      core: "",
+      suffix: data.subarray(cut),
+      suffixUnits: (data.length - cut) / 2,
+    }
+  }
   for (let k = firstP; k <= lastP; k++) if (!toks[k].plain) return null            // 코어 내부에 control
   for (let k = 0; k < firstP; k++) if (toks[k].visible) return null                // 선두에 가시 control
   for (let k = lastP + 1; k < toks.length; k++) if (toks[k].visible) return null   // 말미에 가시 control
@@ -911,7 +931,6 @@ function stageParaPatch(
   skip: (reason: string) => number,
 ): number {
   if (!scan.safe) return skip("섹션 레코드 재직렬화 불일치 — 안전을 위해 이 섹션은 미지원")
-  if (para.textIdx === -1) return skip("빈 문단 텍스트 추가는 미지원 (v1)")
   if (para.textIdx === -2) return skip("복수 PARA_TEXT 레코드 문단 — 미지원 (v1)")
   // 컨트롤 문자(개체 앵커/필드 등)는 splitParaText에서 가장자리 보존 가능 여부를 판정한다.
   if (para.rangeTagCount > 0) return skip("범위 태그(형광펜/교정부호) 문단 — 미지원 (v1)")
@@ -921,11 +940,32 @@ function stageParaPatch(
 
   const records = scan.records
   const headerRec = records[para.headerIdx]
-  const textRec = records[para.textIdx]
   const charShapeRec = records[para.charShapeIdx]
   if (charShapeRec.data.length < 8) {
     return skip("CHAR_SHAPE 레코드 비정형 — 미지원")
   }
+
+  // PARA_TEXT 레코드가 없는 빈 문단(한컴 생략 저장형) — PARA_HEADER 직후에 신규 삽입.
+  // 원본 nChars(하위 31비트)가 1이면 문단끝 1자를 계상한 것이므로 0x0d를 붙여 정합 유지.
+  if (para.textIdx === -1) {
+    const nCharsLow = para.nCharsRaw & 0x7fffffff
+    if (nCharsLow > 1) return skip("PARA_TEXT 없는 문단의 nChars 비정형 — 미지원")
+    const paraEnd = nCharsLow === 1 ? Buffer.from([0x0d, 0x00]) : Buffer.alloc(0)
+    const at = para.headerIdx + 1
+    const list = scan.inserts.get(at) ?? []
+    list.push({ tagId: TAG_PARA_TEXT, level: headerRec.level + 1, data: Buffer.concat([Buffer.from(newPlain, "utf16le"), paraEnd]) })
+    scan.inserts.set(at, list)
+
+    const newHeader = Buffer.from(headerRec.data)
+    newHeader.writeUInt32LE(((para.nCharsRaw & 0x80000000) | (newPlain.length + nCharsLow)) >>> 0, 0)
+    const cs = rebuildCharShape(charShapeRec.data, 0)
+    scan.repl.set(para.charShapeIdx, cs.buf)
+    newHeader.writeUInt16LE(cs.count, 12)
+    scan.repl.set(para.headerIdx, newHeader)
+    return 1
+  }
+
+  const textRec = records[para.textIdx]
 
   // PARA_TEXT를 [선두 control][텍스트 코어][말미 control/문단끝]로 분해
   const seg = splitParaText(textRec.data)

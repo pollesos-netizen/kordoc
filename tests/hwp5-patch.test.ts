@@ -9,6 +9,9 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { createRequire } from "module"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 import { patchHwp, splitParaText } from "../src/roundtrip/hwp5-patch.js"
 import { parseHwp5Document } from "../src/hwp5/parser.js"
 import { FLAG_ENCRYPTED, readRecords, TAG_PARA_HEADER, TAG_PARA_TEXT, TAG_CHAR_SHAPE } from "../src/hwp5/record.js"
@@ -63,8 +66,21 @@ function paragraphWithTab(text: string): Buffer {
   ])
 }
 
-/** 2x2 표 (앵커 문단 + tbl 컨트롤 + 셀 4개) */
-function table2x2(cells: string[][]): Buffer {
+/** PARA_TEXT 레코드 자체가 없는 빈 문단 — 한컴의 빈 문단 생략 저장형 (nChars=1, 문단끝만 계상) */
+function noTextParagraph(level = 0): Buffer {
+  const header = Buffer.alloc(24)
+  header.writeUInt32LE(1, 0)  // nChars = 1 (문단끝) — PARA_TEXT 없음
+  header.writeUInt16LE(1, 12)
+  header.writeUInt16LE(1, 16)
+  return Buffer.concat([
+    rec(0x42, level, header),
+    rec(0x44, level + 1, Buffer.alloc(8)),
+    rec(0x45, level + 1, Buffer.alloc(36)),
+  ])
+}
+
+/** 2x2 표 (앵커 문단 + tbl 컨트롤 + 셀 4개). 셀 값 null = PARA_TEXT 생략형 빈 문단 */
+function table2x2(cells: (string | null)[][]): Buffer {
   const anchorHeader = Buffer.alloc(24)
   const ctrlChar = Buffer.alloc(16)
   ctrlChar.writeUInt16LE(0x0b, 0)
@@ -97,14 +113,15 @@ function table2x2(cells: string[][]): Buffer {
       lh.writeUInt16LE(1, 12)
       lh.writeUInt16LE(1, 14)
       parts.push(rec(0x48, 2, lh))
-      parts.push(paragraph(cells[r][c], 2))
+      const v = cells[r][c]
+      parts.push(v === null ? noTextParagraph(2) : paragraph(v, 2))
     }
   }
   return Buffer.concat(parts)
 }
 
-/** 병합셀 표 (HTML 렌더) — (0,0)이 colSpan=2로 첫 행 병합, 둘째 행은 일반 셀 2개 */
-function tableMerged(headerText: string, leftText: string, rightText: string): Buffer {
+/** 병합셀 표 (HTML 렌더) — (0,0)이 colSpan=2로 첫 행 병합, 둘째 행은 일반 셀 2개. null = PARA_TEXT 생략형 빈 문단 */
+function tableMerged(headerText: string, leftText: string | null, rightText: string): Buffer {
   const anchorHeader = Buffer.alloc(24)
   const ctrlChar = Buffer.alloc(16)
   ctrlChar.writeUInt16LE(0x0b, 0)
@@ -142,7 +159,7 @@ function tableMerged(headerText: string, leftText: string, rightText: string): B
     lh.writeUInt16LE(d.cs, 12)   // colSpan
     lh.writeUInt16LE(d.rs, 14)   // rowSpan
     parts.push(rec(0x48, 2, lh))
-    parts.push(paragraph(d.text, 2))
+    parts.push(d.text === null ? noTextParagraph(2) : paragraph(d.text, 2))
   }
   return Buffer.concat(parts)
 }
@@ -305,6 +322,155 @@ describe("splitParaText — PARA_TEXT 분해 무손실/안전", () => {
     assert.equal(seg!.core, "순수 텍스트 문단")
     const re = Buffer.concat([seg!.prefix, Buffer.from(seg!.core, "utf16le"), seg!.suffix])
     assert.ok(re.equals(data))
+  })
+
+  it("문단끝(0x0d)만 있는 빈 문단 → 빈 코어 분해 (suffix=문단끝)", () => {
+    const seg = splitParaText(Buffer.from([0x0d, 0x00]))
+    assert.ok(seg)
+    assert.equal(seg!.core, "")
+    assert.equal(seg!.prefixUnits, 0)
+    assert.equal(seg!.suffixUnits, 1)
+    assert.ok(Buffer.concat([seg!.prefix, seg!.suffix]).equals(Buffer.from([0x0d, 0x00])))
+  })
+
+  it("개체(0x0b)만 + 문단끝 빈 문단 → 개체는 prefix (새 텍스트가 개체 뒤에 붙도록)", () => {
+    const anchor = Buffer.alloc(16)
+    anchor.writeUInt16LE(0x0b, 0); anchor.writeUInt16LE(0x0b, 14)
+    const data = Buffer.concat([anchor, Buffer.from([0x0d, 0x00])])
+    const seg = splitParaText(data)
+    assert.ok(seg)
+    assert.equal(seg!.core, "")
+    assert.equal(seg!.prefixUnits, 8)
+    assert.equal(seg!.suffixUnits, 1)
+    const re = Buffer.concat([seg!.prefix, Buffer.from(seg!.core, "utf16le"), seg!.suffix])
+    assert.ok(re.equals(data))
+  })
+
+  it("탭(가시 control)만 있는 빈 문단 → null 유지 (보수적 미지원)", () => {
+    const tab = Buffer.alloc(16); tab.writeUInt16LE(0x09, 0)
+    assert.equal(splitParaText(Buffer.concat([tab, Buffer.from([0x0d, 0x00])])), null)
+  })
+
+  it("완전 빈 데이터 → 빈 코어 분해", () => {
+    const seg = splitParaText(Buffer.alloc(0))
+    assert.ok(seg)
+    assert.equal(seg!.core, "")
+    assert.equal(seg!.prefixUnits, 0)
+    assert.equal(seg!.suffixUnits, 0)
+  })
+})
+
+describe("patchHwp — 빈 셀 채우기", () => {
+  it("빈 PARA_TEXT([0x0d]) 셀 값 채우기 — 치환 경로", async () => {
+    const hwp = buildHwp([table2x2([["항목", ""], ["점수", "80"]])])
+    const md = parseHwp5Document(Buffer.from(hwp)).markdown
+    assert.ok(md.includes("| 항목 |  |"), `빈 셀 렌더 확인: ${md}`)
+    const r = await patchHwp(hwp, md.replace("| 항목 |  |", "| 항목 | 신규값 |"))
+    assert.equal(r.success, true)
+    assert.equal(r.applied, 1)
+    assert.equal(r.skipped.length, 0)
+    const re = parseHwp5Document(Buffer.from(r.data!)).markdown
+    assert.ok(re.includes("| 항목 | 신규값 |"), `채움 반영: ${re}`)
+    assert.ok(re.includes("| 점수 | 80 |"), "미수정 셀 보존")
+    assert.equal(r.verification?.stats.modified, 0)
+  })
+
+  it("PARA_TEXT 레코드가 없는(nChars=1 생략형) 셀 값 채우기 — 레코드 삽입 경로", async () => {
+    const hwp = buildHwp([table2x2([["항목", null], ["점수", "80"]])])
+    const md = parseHwp5Document(Buffer.from(hwp)).markdown
+    assert.ok(md.includes("| 항목 |  |"), `빈 셀 렌더 확인: ${md}`)
+    const r = await patchHwp(hwp, md.replace("| 항목 |  |", "| 항목 | 삽입값 |"))
+    assert.equal(r.success, true)
+    assert.equal(r.applied, 1)
+    assert.equal(r.skipped.length, 0)
+    const re = parseHwp5Document(Buffer.from(r.data!)).markdown
+    assert.ok(re.includes("| 항목 | 삽입값 |"), `삽입 반영: ${re}`)
+    assert.ok(re.includes("| 점수 | 80 |"), "미수정 셀 보존")
+    assert.equal(r.verification?.stats.modified, 0)
+  })
+
+  it("삽입된 PARA_TEXT 레코드의 nChars/CHAR_SHAPE 정합", async () => {
+    const hwp = buildHwp([table2x2([["항목", null], ["점수", "80"]])])
+    const md = parseHwp5Document(Buffer.from(hwp)).markdown
+    const r = await patchHwp(hwp, md.replace("| 항목 |  |", "| 항목 | 정합검증 |"))
+    assert.equal(r.applied, 1)
+    const cfb = CFB.parse(Buffer.from(r.data!))
+    const stream = Buffer.from(CFB.find(cfb, "/BodyText/Section0")!.content)
+    const recs = readRecords(stream)
+    // 채워진 문단: PARA_HEADER nChars = 4(정합검증) + 1(문단끝), 뒤따르는 PARA_TEXT 존재
+    const idx = recs.findIndex(rc => rc.tagId === TAG_PARA_TEXT
+      && rc.data.subarray(0, 8).toString("utf16le") === "정합검증")
+    assert.ok(idx > 0, "삽입된 PARA_TEXT를 찾지 못함")
+    assert.equal(recs[idx - 1].tagId, TAG_PARA_HEADER, "PARA_TEXT가 PARA_HEADER 직후에 위치해야 함")
+    assert.equal(recs[idx - 1].data.readUInt32LE(0), 5, "nChars = 텍스트 4 + 문단끝 1")
+    assert.equal(recs[idx + 1].tagId, TAG_CHAR_SHAPE, "CHAR_SHAPE가 PARA_TEXT 뒤를 따라야 함")
+    // 문단끝(0x0d) 포함 확인 — 원본 nChars=1(문단끝 계상)이었으므로
+    assert.equal(recs[idx].data.readUInt16LE(recs[idx].data.length - 2), 0x0d)
+  })
+
+  it("빈 셀 유지 no-op — 삽입 인프라가 비수정 경로에 영향 없음 (바이트 동일)", async () => {
+    for (const cell of ["", null] as const) {
+      const hwp = buildHwp([table2x2([["항목", cell], ["점수", "80"]])])
+      const md = parseHwp5Document(Buffer.from(hwp)).markdown
+      const r = await patchHwp(hwp, md)
+      assert.equal(r.success, true)
+      assert.equal(r.applied, 0)
+      assert.deepEqual(Buffer.from(r.data!), Buffer.from(hwp))
+    }
+  })
+
+  it("HTML 병합 표의 빈 셀 채우기 — 치환/삽입 양 경로 (applyCellEdit5)", async () => {
+    for (const cell of ["", null] as const) {
+      const hwp = buildHwp([tableMerged("머리글", cell, "오른쪽")])
+      const md = parseHwp5Document(Buffer.from(hwp)).markdown
+      assert.ok(md.includes("<table") && md.includes("<td></td>"), `빈 셀 HTML 렌더 확인: ${md}`)
+      const r = await patchHwp(hwp, md.replace("<td></td>", "<td>채운값</td>"))
+      assert.equal(r.success, true, `${JSON.stringify(r.skipped)}`)
+      assert.equal(r.applied, 1, `cell=${JSON.stringify(cell)}: ${JSON.stringify(r.skipped)}`)
+      assert.equal(r.skipped.length, 0)
+      const re = parseHwp5Document(Buffer.from(r.data!)).markdown
+      assert.ok(re.includes("채운값"), `채움 반영: ${re}`)
+      assert.ok(re.includes("머리글") && re.includes("오른쪽"), "미수정 셀 보존")
+    }
+  })
+})
+
+// ─── 실파일 스윕 (bench/corpus/hwp5 — gitignore, 존재할 때만 실행) ───
+
+const HWP5_CORPUS = join(dirname(fileURLToPath(import.meta.url)), "..", "bench", "corpus", "hwp5")
+
+describe("patchHwp e2e: 실파일 (.hwp)", { skip: !existsSync(HWP5_CORPUS) }, () => {
+  it("no-op 패치는 전 실파일 바이트 동일", async () => {
+    const files = readdirSync(HWP5_CORPUS).filter(f => f.endsWith(".hwp"))
+    for (const f of files) {
+      const buf = readFileSync(join(HWP5_CORPUS, f))
+      let md: string
+      try { md = parseHwp5Document(buf).markdown } catch { continue }
+      const r = await patchHwp(new Uint8Array(buf), md)
+      assert.equal(r.success, true, `${f}: ${r.error}`)
+      assert.equal(r.applied, 0, f)
+      assert.deepEqual(Buffer.from(r.data!), buf, `${f}: no-op 바이트 불일치`)
+    }
+  })
+
+  it("셀 비우기 → 재채움 왕복 — 실제 한컴 빈 문단 구조에서 채우기 검증", async () => {
+    const path = join(HWP5_CORPUS, "merging-cell.hwp")
+    if (!existsSync(path)) return
+    const buf = readFileSync(path)
+    const md = parseHwp5Document(buf).markdown
+    assert.ok(md.includes("| 1,1 |"), `표 셀 렌더 확인: ${md.slice(0, 120)}`)
+
+    const r1 = await patchHwp(new Uint8Array(buf), md.replace("| 1,1 |", "|  |"))
+    assert.equal(r1.applied, 1, `비우기: ${JSON.stringify(r1.skipped)}`)
+    const md1 = parseHwp5Document(Buffer.from(r1.data!)).markdown
+    assert.ok(md1.includes("|  |"), "비운 셀이 재파싱에 반영")
+
+    const r2 = await patchHwp(new Uint8Array(Buffer.from(r1.data!)), md1.replace("|  |", "| 재채움 |"))
+    assert.equal(r2.applied, 1, `재채움: ${JSON.stringify(r2.skipped)}`)
+    assert.equal(r2.skipped.length, 0)
+    const md2 = parseHwp5Document(Buffer.from(r2.data!)).markdown
+    assert.ok(md2.includes("| 재채움 |"), "재채움이 재파싱에 반영")
+    assert.equal(r2.verification?.stats.modified, 0)
   })
 })
 

@@ -17,8 +17,9 @@ import {
   type HwpDocInfo,
 } from "../src/hwp5/record.js"
 import { NumberingState, formatNumber, expandNumberingFormat } from "../src/hwp5/numbering.js"
+import { extractHwp5Images } from "../src/hwp5/images.js"
 import { blocksToMarkdown } from "../src/table/builder.js"
-import type { ParseWarning } from "../src/types.js"
+import type { IRBlock, ParseWarning } from "../src/types.js"
 
 // ─── 합성 레코드 빌더 ────────────────────────────────
 
@@ -282,6 +283,19 @@ describe("이미지 추출 (BIN_DATA + SHAPE_COMPONENT_PICTURE)", () => {
     const img = blocks.find(b => b.type === "image")
     assert.ok(img, "이미지 블록 생성")
     assert.equal(img!.text, "10") // binDataId 1 → storageId 10 (스트림 BIN000A)
+  })
+
+  it("같은 BinData를 참조하는 다수 image 블록 — 1회만 추출·데이터 공유 (대량 참조 메모리 폭발 방지)", () => {
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64)])
+    const fileIndex = [{ name: "Root Entry/BinData/BIN000A.jpg", content: jpeg }]
+    const blocks: IRBlock[] = [1, 2, 3].map(() => ({ type: "image" as const, text: "10" }))
+    const warnings: ParseWarning[] = []
+    const images = extractHwp5Images(fileIndex, blocks, warnings)
+    assert.equal(images.length, 1, "같은 BinData는 1건만 추출")
+    for (const b of blocks) assert.equal(b.text, "image_001.jpg", "모든 블록이 같은 파일명 참조")
+    assert.equal(blocks[0].imageData!.data, blocks[1].imageData!.data, "데이터 버퍼 공유 (복사 1벌)")
+    assert.equal(images[0].data, blocks[2].imageData!.data)
+    assert.equal(warnings.length, 0)
   })
 
   it("link 타입 binDataId는 SKIPPED_IMAGE 경고 + 블록 미생성", () => {

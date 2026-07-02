@@ -95,6 +95,9 @@ function resolveImageBlocks(
 
   const images: ExtractedImage[] = []
   const renamed = new Map<number, string>()
+  // 같은 BinData를 참조하는 개체가 수천 개일 수 있다(도형 반복 등) — storageId당
+  // 1회만 변환·추출하고 데이터 버퍼를 공유한다 (블록마다 복사하면 메모리 폭발)
+  const resolved = new Map<number, { filename: string; data: Uint8Array; mime: string } | null>()
   let imageIndex = 0
 
   for (const block of imageBlocks) {
@@ -102,30 +105,37 @@ function resolveImageBlocks(
     const storageId = parseInt(block.text, 10)
     if (isNaN(storageId)) continue
 
-    const bin = binDataMap.get(storageId)
-    if (!bin) {
-      warnings.push({ page: block.pageNumber, message: `BinData ${storageId} 없음`, code: "SKIPPED_IMAGE" })
-      block.type = "paragraph"
-      block.text = `[이미지: BinData ${storageId}]`
-      continue
+    let img = resolved.get(storageId)
+    if (img === undefined) {
+      const bin = binDataMap.get(storageId)
+      if (!bin) {
+        warnings.push({ page: block.pageNumber, message: `BinData ${storageId} 없음`, code: "SKIPPED_IMAGE" })
+        resolved.set(storageId, null)
+      } else {
+        const mime = detectImageMime(bin.data)
+        if (!mime) {
+          warnings.push({ page: block.pageNumber, message: `BinData ${storageId}: 알 수 없는 이미지 형식`, code: "SKIPPED_IMAGE" })
+          resolved.set(storageId, null)
+        } else {
+          imageIndex++
+          const ext = mime.includes("jpeg") ? "jpg" : mime.includes("png") ? "png" : mime.includes("gif") ? "gif" : mime.includes("bmp") ? "bmp" : "bin"
+          img = { filename: `image_${String(imageIndex).padStart(3, "0")}.${ext}`, data: new Uint8Array(bin.data), mime }
+          resolved.set(storageId, img)
+          images.push({ filename: img.filename, data: img.data, mimeType: img.mime })
+          renamed.set(storageId, img.filename)
+        }
+      }
+      img = resolved.get(storageId)
     }
 
-    const mime = detectImageMime(bin.data)
-    if (!mime) {
-      warnings.push({ page: block.pageNumber, message: `BinData ${storageId}: 알 수 없는 이미지 형식`, code: "SKIPPED_IMAGE" })
+    if (!img) {
+      const bin = binDataMap.get(storageId)
       block.type = "paragraph"
-      block.text = `[이미지: ${bin.name}]`
+      block.text = bin ? `[이미지: ${bin.name}]` : `[이미지: BinData ${storageId}]`
       continue
     }
-
-    imageIndex++
-    const ext = mime.includes("jpeg") ? "jpg" : mime.includes("png") ? "png" : mime.includes("gif") ? "gif" : mime.includes("bmp") ? "bmp" : "bin"
-    const filename = `image_${String(imageIndex).padStart(3, "0")}.${ext}`
-
-    images.push({ filename, data: new Uint8Array(bin.data), mimeType: mime })
-    renamed.set(storageId, filename)
-    block.text = filename
-    block.imageData = { data: new Uint8Array(bin.data), mimeType: mime, filename: bin.name }
+    block.text = img.filename
+    block.imageData = { data: img.data, mimeType: img.mime, filename: binDataMap.get(storageId)!.name }
   }
 
   resolveCellImageSentinels(blocks, renamed)

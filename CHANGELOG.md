@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.1] - 2026-07-03
+
+### Fixed
+
+- **PDF 회전 텍스트(90°/270°) hidden 오분류** — 사이드탭 챕터 인덱스·세로로 눕힌 표
+  (계속비 총괄표 등)가 숨김텍스트 필터(prompt injection 방어)에 걸려 통째로 빠지던
+  버그. 회전 행렬 `[0,s,-s,0]`에서 대각 성분만 보던 fontSize 계산을 변환행렬
+  열벡터 노름으로 교체. 진짜 0 스케일 숨김텍스트 방어는 그대로 유지.
+  (실코퍼스 기준 문서당 최대 3,000개 텍스트 아이템 복구)
+
+### Changed
+
+- **대형 파일 모듈 분리 (내부, 공개 API 무변경)** — `pdf/line-detector.ts`(1,247줄)
+  → 7모듈, `hwpx/parser.ts`(1,619줄) → 8모듈. 기존 import 경로는 재수출 허브로
+  전부 유지. 실파일 87건 markdown+blocks sha256 전/후 동일 검증(`bench/hash-sweep.mjs`).
+- **PDF 정확도 벤치 참조 채점 대칭화** (`bench/`) — 목차 리더 점선 런 붕괴,
+  페이지 가장자리 반복 러닝헤더 제거(파서 규칙과 대칭), 참조 trigram 줄 단위 계산
+  (줄 경계 gram은 추출기 순회 순서라 배제). 실코퍼스 42건 coverage 게이트
+  0.985 PASS (0.99471).
+
 ## [3.8.0] - 2026-07-02
 
 ### Added

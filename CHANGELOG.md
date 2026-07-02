@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.0] - 2026-07-02
+
+### Added
+
+- **HWP 5.x 빈 셀/빈 문단 채우기** (`patchHwp`) — 원본에서 비어 있던 표 셀에
+  편집 마크다운으로 값을 넣으면 이제 HWP 바이너리에 삽입된다.
+  - `splitParaText`: 일반 텍스트가 없는 문단(빈/개체만)도 전 토큰이 비가시면
+    빈 코어로 분해 — 새 텍스트가 [선두 개체 뒤, 문단끝 앞]에 들어간다. 탭 등
+    가시 control이 있는 문단은 기존대로 건드리지 않음.
+  - PARA_TEXT 생략형(텍스트 레코드 자체가 없는 빈 문단)은 레코드를 신규 삽입
+    (`SectionScan5.inserts` + `serializeRecords` 확장, nChars 하위비트로 문단끝
+    정합). 실측 기준 한컴 빈 문단의 지배형(hwplib 실파일 57/66)이 이 형태.
+  - GFM/HTML/1x1 전 경로 지원. 실파일 검증: no-op 12/12 바이트동일,
+    비우기→재채움 왕복 무결, rhwp 렌더 육안 확인.
+- **공문서 모드: 항목 사이 표가 번호 흐름을 끊지 않음** (`markdownToHwpx`
+  gongmun) — "1. 항목 → 근거 표 → 2. 항목"처럼 리스트 사이에 표(GFM/HTML)가
+  끼어도 항목부호가 이어진다(공문 관행). 문단이 끼면 기존대로 리셋.
+- **성능 벤치 신설** (`bench/perf.mjs`) — 실파일 코퍼스 속도(median/p95·MB/s)·
+  no-op 라운드트립 바이트동일·폼 인식 집계. 기준선: hwpx median 7.8ms·11.8MB/s,
+  no-op 88/88, 실파일 실패 0.
+
+### Fixed
+
+- **DOCX 무경고 실패 5종 경고화** — 이미지/스타일/번호매기기/각주/메타데이터
+  파싱 실패를 조용히 무시하던 것을 `warnings`로 보고 (이미지=`SKIPPED_IMAGE`,
+  나머지=`PARTIAL_PARSE`). 파싱은 기존대로 계속되므로 결과는 동일, 실패가
+  보이게만 바뀜.
+
+### Performance
+
+- **이미지 대량 참조 메모리 폭발 해소 (HWP5·HWPX 공통)** — 같은 이미지를
+  참조하는 개체마다 데이터를 복사·중복 추출하던 것을 참조(BinData storageId /
+  HWPX ref)당 1회 변환·버퍼 공유로 전환. 3.7MB 이미지를 도형 12,822개가
+  참조하는 실파일(hwplib big_file.hwp)이 **피크 17GB OOM 완주 불가 → 197ms·
+  피크 445MB**로 완주. 실패도 캐시해 `SKIPPED_IMAGE` 경고는 참조당 1회만.
+
 ## [3.7.0] - 2026-07-02
 
 ### Added

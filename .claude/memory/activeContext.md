@@ -51,14 +51,15 @@
   leehuiso 기여 + 리뷰 8건 수술) + 게이트 3종. npm+tag+gh release
 - 커밋: e74b284(기여자) → a218af4(수술) → 7dcb7a9(bench) → 1dd819d(머지) → a125035(release)
 
-## 다음 세션 (플랜: .claude/plans/next-session-pdf-gt-leftovers.md 갱신본)
+## 다음 세션 (플랜: .claude/plans/next-session-pdf-gt-leftovers.md 갱신 2차 — 사용자 지시 반영)
 
-- **① 렌더 모듈화 판단**: PoC 잔여 4건(인라인 스케일·중첩 pic·탭 청크·charPr) 해소
-  후 src/render/ + CLI `kordoc render` 노출 — render-poc/findings.md 먼저 읽기
-- **② pdf-table-gt 잔여**: 분할병합 보정 불발(전 쌍 splitMerged=0, rowsSum-1 관용
-  시도) / pair05 F1 0.458 해부
-- ③ 소액: hml bizinfo 글상자 / eval-perf-2024 OCR / A-5 폼 정오 / hwp3 합성 픽스처
-- Windows+한컴에서 v3.9.0 수식 hwpx 실물 열기 확인 (사용자) — PR 체크박스 미완 항목
+**완주 목표: 작업 → npm 배포 → 문서 현행화 → 스레드 포스팅까지 한 번에.**
+- ⓪ 한컴 실물 확인 피드백 처리 (수식검증-일반/공문.hwpx 2개 전달됨 — 결과 먼저 묻기)
+- ① 렌더 모듈화 (메인): PoC 잔여 4건 → src/render/ + CLI — render-poc/findings.md
+- ② 릴리스: 렌더 성립 시 v3.10.0 (아니면 v3.9.1) + CHANGELOG/README/CLAUDE.md 현행화
+- ③ 스레드 포스팅 (threads-post 스킬): v3.8.4~v3.9.0 개선 요약 — 숫자 훅(0.947→0.9996 등),
+  초안 사용자 컨펌 후 발행
+- ④ 여유 시 pdf-table-gt 분할병합 / 소액 백로그
 
 ## 재론 금지 (기존 유지 + 신규)
 

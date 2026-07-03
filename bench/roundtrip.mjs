@@ -1,0 +1,190 @@
+#!/usr/bin/env node
+// 생성 라운드트립 충실도 — md→hwpx(generate)→재파싱→md 의 내용/표 보존 측정.
+// gen-sweep(엔트리 해시 회귀)과 별개의 "품질" 트랙: 해시가 바뀌는 개선이 있어도
+// 내용 충실도가 후퇴하지 않는지를 잰다.
+//
+// 트랙:
+//   corpus  : 실코퍼스 hwpx 75건의 파싱 md를 입력으로 재생성·재파싱 (기본 게이트 대상)
+//   fixture : 합성 md + 공문서 모드(gongmun) — 보고 위주 (공문 모드는 서식 변환이 의도라
+//             완전 동일을 요구하지 않는다)
+//
+// 지표 (문서별 → micro 집계):
+//   fwdCov  : M0 평문 3-gram이 M1에 남아있는 비율 (내용 손실 검출)
+//   bwdCov  : M1 → M0 역방향 (phantom 검출)
+//   표      : 원 IR 그리드를 참조 삼아 scoreTables 재사용 — exact/cellExact/contentNED
+//
+// 사용법: node bench/roundtrip.mjs [--gate] [--doc=부분문자열] [--verbose]
+//   --gate 시 게이트 미달이면 exit 1 (기준선 2회 안정 확인 후 score 편입 판단)
+
+import { readdir, readFile, writeFile, mkdir } from "node:fs/promises"
+import { join, relative, basename } from "node:path"
+import { parse, markdownToHwpx } from "../dist/index.js"
+import { mdToPlain, normKey } from "./lib/normalize.mjs"
+import { collectIrGrids, scoreTables } from "./lib/table-score.mjs"
+
+const root = new URL(".", import.meta.url).pathname
+const args = process.argv.slice(2)
+const gateMode = args.includes("--gate")
+const verbose = args.includes("--verbose")
+const docFilter = (args.find(a => a.startsWith("--doc=")) ?? "").split("=")[1] ?? null
+
+// 게이트 = 무후퇴 플로어 (2026-07-03 기준선: fwd 0.947273 / bwd 0.946838 / tableExact 0.727848
+// / cellExact 0.991652). 기준선 미달 원인 4종(개선 백로그): ①헤딩 왕복 소실(#→일반 문단)
+// ②리스트 마커 변형(-→·)·중첩 평탄화·번호 재시작 ③마스킹 별표 런이 md HR로 소비(파서 출력
+// 미이스케이프) ④셀 내 <img> 상대참조 드롭(바이너리 없음 — 수용). 개선 시 플로어 상향.
+const GATES = { fwdCovMicro: 0.945, bwdCovMicro: 0.94, tableExact: 0.72, cellExact: 0.985, genErrors: 0 }
+
+const round = (x, d = 6) => (x === null || x === undefined ? null : +x.toFixed(d))
+
+// ─── 3-gram 커버리지 (normKey 평문, 전체 텍스트) ───────
+function trigramBag(s) {
+  const bag = new Map()
+  for (let i = 0; i + 3 <= s.length; i++) {
+    const g = s.substr(i, 3)
+    bag.set(g, (bag.get(g) ?? 0) + 1)
+  }
+  return bag
+}
+function coverage(refBag, outBag) {
+  let total = 0, covered = 0
+  for (const [g, n] of refBag) { total += n; covered += Math.min(n, outBag.get(g) ?? 0) }
+  return { total, covered, coverage: total ? covered / total : 1 }
+}
+
+// ─── 라운드트립 1건 ────────────────────────────────
+async function roundtrip(m0, genOpts) {
+  const hwpx = await markdownToHwpx(m0, genOpts)
+  const res1 = await parse(Buffer.from(hwpx), { filename: "roundtrip.hwpx" })
+  if (!res1.success) return { ok: false, stage: "reparse", error: res1.error }
+  return { ok: true, m1: res1.markdown, blocks1: res1.blocks }
+}
+
+function scoreRound(m0, blocks0, rt) {
+  const p0 = normKey(mdToPlain(m0).text)
+  const p1 = normKey(mdToPlain(rt.m1).text)
+  const b0 = trigramBag(p0), b1 = trigramBag(p1)
+  const fwd = coverage(b0, b1)
+  const bwd = coverage(b1, b0)
+  // 표: 원 파싱 IR 그리드를 참조로 재파싱 그리드를 채점 (기존 채점기 재사용)
+  const refGrids = collectIrGrids(blocks0).map(g => ({ rows: g.rows, cols: g.cols, cells: g.anchors }))
+  const tbl = scoreTables(refGrids, collectIrGrids(rt.blocks1))
+  const h0 = (m0.match(/^#{1,6} /gm) ?? []).length
+  const h1 = (rt.m1.match(/^#{1,6} /gm) ?? []).length
+  return {
+    ok: true,
+    refGrams: fwd.total,
+    fwdCov: round(fwd.coverage), bwdCov: round(bwd.coverage),
+    fwdCovered: fwd.covered, bwdGrams: bwd.total, bwdCovered: bwd.covered,
+    tables: {
+      ref: tbl.tableCount, out: tbl.irTableCount, exact: tbl.exactCount,
+      cellTotal: tbl.cellTotal, cellExact: tbl.cellExact, contentNED: round(tbl.contentNED),
+    },
+    headings: { ref: h0, out: h1 },
+  }
+}
+
+// ─── fixture 트랙 (합성 md + 공문서 모드) ───────────
+const FIXTURES = [
+  { name: "basic", md: "# 제목1\n\n본문 **굵게** *기울임* `코드`\n\n## 제목2\n\n- 리스트1\n- 리스트2\n  - 하위 항목\n\n> 인용문\n" },
+  { name: "table-gfm", md: "| 구분 | 금액 | 비고 |\n| --- | --- | --- |\n| 세입 | 1,000 | 증가 |\n| 세출 | 900 | 감소 |\n" },
+  { name: "table-merge", md: '<table><tr><th rowspan="2">구분</th><th colspan="2">내역</th></tr><tr><td>세입</td><td>세출</td></tr><tr><td>합계</td><td>1,000</td><td>900</td></tr></table>\n' },
+  { name: "mixed", md: "# 사업 개요\n\n○ 기간: 2026년 상반기\n\n| 항목 | 값 |\n| --- | --- |\n| 예산 | 1억 |\n\n마무리 문단입니다.\n" },
+  { name: "gongmun", md: "수신 내부결재\n\n제목 테스트 기안\n\n1. 관련: 행정안전부 공문\n\n2. 다음과 같이 보고합니다.\n\n가. 첫째 항목\n\n나. 둘째 항목\n\n붙임 1부.  끝.\n", opts: { gongmun: { preset: "기안문" } } },
+]
+
+// ─── 메인 ──────────────────────────────────────────
+const t0 = performance.now()
+const corpusDir = join(root, "corpus")
+const files = []
+for (const dir of ["review", "hwp5"]) {
+  for (const e of await readdir(join(corpusDir, dir), { withFileTypes: true })) {
+    if (e.isFile() && /\.hwpx$/i.test(e.name)) files.push(join(corpusDir, dir, e.name))
+  }
+}
+files.sort()
+
+const corpusRows = []
+let genErrors = 0
+for (const file of files) {
+  const rel = relative(corpusDir, file)
+  if (docFilter && !rel.includes(docFilter)) continue
+  const buf = await readFile(file)
+  // 확장자 .hwpx + OLE2 매직(실제 HWP5) — 자기 md가 없으니 제외 (score.mjs와 동일 정책)
+  if (buf.length >= 4 && buf[0] === 0xd0 && buf[1] === 0xcf && buf[2] === 0x11 && buf[3] === 0xe0) continue
+  const res0 = await parse(buf, { filename: basename(file) })
+  if (!res0.success) { corpusRows.push({ file: rel, ok: false, stage: "parse0", error: res0.error }); continue }
+  try {
+    const rt = await roundtrip(res0.markdown, undefined)
+    if (!rt.ok) { genErrors++; corpusRows.push({ file: rel, ...rt }); continue }
+    const row = { file: rel, ...scoreRound(res0.markdown, res0.blocks, rt) }
+    corpusRows.push(row)
+    if (verbose) console.error(`corpus fwd=${row.fwdCov} bwd=${row.bwdCov} tbl=${row.tables.exact}/${row.tables.ref} ${rel}`)
+  } catch (err) {
+    genErrors++
+    corpusRows.push({ file: rel, ok: false, stage: "generate", error: String(err?.message ?? err).slice(0, 300) })
+  }
+}
+
+const fixtureRows = []
+for (const f of FIXTURES) {
+  try {
+    const rt = await roundtrip(f.md, f.opts)
+    if (!rt.ok) { fixtureRows.push({ name: f.name, ...rt }); continue }
+    // fixture는 원 IR이 없으므로 표 참조를 입력 md의 재파싱 아닌 자체 생성물 기준으로만 —
+    // 텍스트 커버리지 + md 왕복 텍스트만 본다 (표 구조는 corpus 트랙 소관)
+    const p0 = normKey(mdToPlain(f.md).text)
+    const p1 = normKey(mdToPlain(rt.m1).text)
+    const fwd = coverage(trigramBag(p0), trigramBag(p1))
+    const bwd = coverage(trigramBag(p1), trigramBag(p0))
+    fixtureRows.push({ name: f.name, ok: true, gongmun: !!f.opts, fwdCov: round(fwd.coverage), bwdCov: round(bwd.coverage), refGrams: fwd.total })
+  } catch (err) {
+    fixtureRows.push({ name: f.name, ok: false, stage: "generate", error: String(err?.message ?? err).slice(0, 300) })
+  }
+}
+
+// ─── 집계 ──────────────────────────────────────────
+const okRows = corpusRows.filter(r => r.ok)
+const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0)
+const fwdMicro = sum(okRows, r => r.fwdCovered) / Math.max(1, sum(okRows, r => r.refGrams))
+const bwdMicro = sum(okRows, r => r.bwdCovered) / Math.max(1, sum(okRows, r => r.bwdGrams))
+const tblRef = sum(okRows, r => r.tables.ref), tblExact = sum(okRows, r => r.tables.exact)
+const cellTotal = sum(okRows, r => r.tables.cellTotal), cellExact = sum(okRows, r => r.tables.cellExact)
+const tableExactRate = tblRef ? tblExact / tblRef : 1
+const cellExactRate = cellTotal ? cellExact / cellTotal : 1
+
+const gates = {
+  fwdCovMicro: { value: round(fwdMicro), threshold: GATES.fwdCovMicro, pass: fwdMicro >= GATES.fwdCovMicro },
+  bwdCovMicro: { value: round(bwdMicro), threshold: GATES.bwdCovMicro, pass: bwdMicro >= GATES.bwdCovMicro },
+  tableExact: { value: round(tableExactRate), threshold: GATES.tableExact, pass: tableExactRate >= GATES.tableExact },
+  cellExact: { value: round(cellExactRate), threshold: GATES.cellExact, pass: cellExactRate >= GATES.cellExact },
+  genErrors: { value: genErrors, threshold: GATES.genErrors, pass: genErrors <= GATES.genErrors },
+}
+const pass = Object.values(gates).every(g => g.pass)
+
+const report = {
+  generatedAt: new Date().toISOString(),
+  elapsedMs: Math.round(performance.now() - t0),
+  corpusDocs: okRows.length,
+  pass, gates,
+  aggregate: {
+    fwdCovMicro: round(fwdMicro), bwdCovMicro: round(bwdMicro),
+    tables: { ref: tblRef, exact: tblExact, cellTotal, cellExact, cellExactRate: round(cellExactRate) },
+  },
+  worstFwd: [...okRows].sort((a, b) => a.fwdCov - b.fwdCov).slice(0, 10).map(r => ({ file: r.file, fwdCov: r.fwdCov, bwdCov: r.bwdCov })),
+  fixtures: fixtureRows,
+  corpus: corpusRows,
+}
+await mkdir(join(root, "out"), { recursive: true })
+await writeFile(join(root, "out", "roundtrip.json"), JSON.stringify(report, null, 1))
+
+console.log(`\n══ 생성 라운드트립 충실도 — corpus ${okRows.length}건 / fixture ${fixtureRows.length}건 (${Math.round(report.elapsedMs / 1000)}s) ══`)
+for (const [k, g] of Object.entries(gates)) {
+  console.log(`  ${g.pass ? "✅" : "❌"} ${k.padEnd(12)} ${g.value} (기준 ${g.threshold})`)
+}
+console.log(`  표: ref=${tblRef} exact=${tblExact} | 셀 ${cellExact}/${cellTotal}`)
+console.log("[worst fwd 5]")
+for (const w of report.worstFwd.slice(0, 5)) console.log(`  ${w.fwdCov} bwd=${w.bwdCov} ${w.file}`)
+console.log("[fixtures]")
+for (const f of fixtureRows) console.log(`  ${f.ok ? (f.gongmun ? "공문" : "  ") : "ERR"} fwd=${f.fwdCov ?? "-"} bwd=${f.bwdCov ?? "-"} ${f.name}${f.error ? " — " + f.error : ""}`)
+console.log(`report → bench/out/roundtrip.json | ${pass ? "PASS ✅" : "FAIL ❌"}${gateMode ? "" : " (보고 전용 — --gate 시 exit code 반영)"}`)
+if (gateMode && !pass) process.exit(1)

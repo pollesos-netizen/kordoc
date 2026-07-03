@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] - 2026-07-03
+
+### Added
+
+- **PDF 개방 변 표 테두리 합성** (`closeOpenTableEdges`) — 좌/우 바깥 테두리를 생략하는
+  행정문서 표 스타일(수평 괘선 전폭 + 내부 수직선만)에서 교차점 기반 그리드가 가장자리
+  열을 통째로 잃던 것을, 끝점 정렬 괘선 묶음(≥3줄)에 내부 수직선이 실존할 때 끝점 x에
+  가상 수직 테두리를 합성해 복원
+
+### Fixed
+
+- **글상자 그라디언트 음영의 괘선 오염** — 한컴 PDF가 배경 그라디언트를 같은 범위의
+  가는 수평선 수십 개(0.5pt 간격)로 그려, 근접 평행선 병합이 스택과 함께 주변의 실제
+  상하 테두리까지 연쇄 흡수하던 것을 음영 스택 필터(≥6줄·<2pt 간격 run 제거)로 차단
+- 위 두 수정으로 채용공고류 1페이지 병리 완치 — 2x6 표가 가운데 4열만 감지되고 지역·비고
+  열과 아래 본문·섹션 제목·담당업무 표까지 13x2 유령 표로 흡수되던 사례 (pair05 실측)
+
+### Benchmark
+
+- pdf표GT(6쌍): 매칭 0.8472→**0.9028** / exact 0.5417→**0.5833** / cellF1 0.6324→**0.6518**
+  (채점기 bagExtra 매칭 보강 포함 — pdf가 평탄화하는 동의서류 중첩표 박스 4건 매칭 회복.
+  contentNED 플로어는 0.5→0.49 재잠금: 종전 미매칭 표의 빈 셀이 받던 공짜 exact가
+  정직한 좌표 대조로 바뀐 의미 변화, 상세는 bench/pdf-table-gt.mjs 헤더)
+- 그 외 전 트랙 무후퇴: hwpx recallMicro 1.0 · 표 611/611 · pdf coverage 0.99608 ·
+  roundtrip/formats/fuzz 게이트 전부 PASS · 테스트 683/683
+
 ## [3.10.1] - 2026-07-03
 
 ### Fixed

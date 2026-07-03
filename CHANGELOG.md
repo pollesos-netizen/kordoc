@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.0] - 2026-07-04
+
+### Added
+
+- **렌더 다페이지 지원** — `kordoc render`가 전 페이지를 세로 스택 SVG로 그린다
+  (페이지별 흰 배경·경계선·클립, `data-page` 속성, `RenderSvgResult.pageCount`).
+  최상위 lineseg `vertpos`가 페이지 로컬(페이지마다 0부터 리셋)인 성질로 경계를
+  감지하며, 다단(colCount>1)은 horzpos 복귀 조건을 함께 본다. 기존에는 전 페이지가
+  첫 페이지 한 장에 겹쳐 그려졌다.
+- **렌더 검색어 형광펜** — `--highlight <쉼표구분어>` / `RenderSvgOptions.highlights`.
+  텍스트 조각을 매치 경계로 분할해 매치 세그먼트에만 배경 rect 를 깐다(대소문자 무시).
+  세그먼트와 rect 가 동일한 `textLength` 폭·위치로 계산돼 정렬 오차가 없다.
+  charPr 경계에 걸친 매치는 칠하지 못하는 한계.
+
+### Fixed
+
+- **렌더 줄 경계 어긋남** — lineseg `textpos`는 HWP5 문자 스트림 슬롯 기준(표·구역
+  정의 등 컨트롤 8슬롯, 탭·lineBreak 등 문자형 컨트롤 1슬롯, 서로게이트 쌍 2슬롯)
+  인데 순수 텍스트 코드포인트로만 세어, 컨트롤·탭이 섞인 문단에서 첫 줄에 글자가
+  몰리고 다음 줄이 비는 현상. 슬롯 스트림 재구성으로 정합 (데모 코퍼스 1,132개
+  멀티라인 문단에서 경계가 8슬롯 블록 중간에 걸린 사례 0건으로 검증).
+- **렌더 이미지 크롭 오판(로고 깨짐)** — `imgClip` 좌표계를 `orgSz`(최초 삽입 크기)
+  기준으로 해석해, 삽입 후 리사이즈된 이미지(dim<org, 로고 대부분)를 좌상단 코너로
+  잘못 잘라 로고가 흐린 조각이나 빈칸으로 깨졌다. `imgClip`은 `imgDim`(내용 상자)
+  기준임을 반영 (데모 코퍼스 pic 267개 중 254개가 clip==dim=크롭 없음, 실제 크롭
+  8개도 모두 dim 기준으로 정상 렌더).
+
 ## [3.13.0] - 2026-07-04
 
 ### Added

@@ -13,7 +13,11 @@
  * - 좌표 속성엔 uint32로 저장된 음수가 섞여 있다(toInt32 필수).
  * - 표 열은 span 제약 경계 전파로, 행은 rs=1 max + 콘텐츠 초과 성장으로 푼다.
  *
- * 범위: 1페이지(section0) 한정, 수식·그리기개체 도형은 미지원(경고 수집).
+ * 페이지: 최상위 lineseg vertpos는 페이지 로컬(페이지마다 0부터 리셋)이므로 역행
+ *   지점을 페이지 경계로 감지, 전 페이지를 세로 스택으로 그린다(페이지별 흰 배경 +
+ *   클립). 페이지에 걸친 표는 시작 페이지에서 잘린다(조판 캐시에 분할점이 없음).
+ *
+ * 범위: section0 한정(다중 구역은 첫 구역만), 수식·그리기개체 도형은 미지원(경고 수집).
  */
 
 import JSZip from "jszip"
@@ -26,13 +30,19 @@ import { parseRenderStyles, DEFAULT_CHAR, type RenderStyles, type RenderBorderEd
 export interface RenderSvgOptions {
   /** 이미지 1장당 허용 최대 바이트 (기본 40MB) */
   maxImageBytes?: number
+  /** 검색어 형광펜 — 텍스트 조각 내 매치 구간에 배경 rect (대소문자 무시).
+   *  charPr(스타일) 경계에 걸친 매치는 칠하지 못한다. */
+  highlights?: string[]
 }
 
 export interface RenderSvgResult {
   svg: string
-  /** 페이지 크기 (pt) */
+  /** 페이지 폭 (pt) */
   width: number
+  /** 전체 캔버스 높이 (pt) — 페이지 세로 스택 + 간격 */
   height: number
+  /** 렌더된 페이지 수 */
+  pageCount: number
   warnings: string[]
   stats: { texts: number; images: number; tables: number }
 }
@@ -87,16 +97,25 @@ interface ParaObj { el: Element; tag: string; index: number; inline: boolean; wi
 interface ParaModel { chars: ParaChar[]; segs: Seg[]; objs: ParaObj[]; paraPrId: string | null }
 
 interface Ctx {
-  svg: string[]
+  /** 페이지별 SVG 버퍼 — emit()이 현재 페이지(page)로 라우팅 */
+  pages: string[][]
+  /** 현재 그리는 페이지 인덱스 — 최상위 문단만 갱신, 셀/중첩 콘텐츠는 호스트 페이지 상속 */
+  page: number
   geom: PageGeom
   styles: RenderStyles
   images: Map<string, { dataUri: string; orgW?: number; orgH?: number }>
+  /** 검색어 형광펜 (소문자 정규화, 빈 문자열 제거) */
+  highlights: string[]
   warnings: string[]
   warned: Set<string>
   stats: { texts: number; images: number; tables: number }
 }
 
 const pt = (u: number): string => String(Math.round(u) / 100)
+
+function emit(ctx: Ctx, s: string): void {
+  ctx.pages[ctx.page].push(s)
+}
 
 function warnOnce(ctx: Ctx, key: string, msg: string): void {
   if (ctx.warned.has(key)) return
@@ -106,21 +125,41 @@ function warnOnce(ctx: Ctx, key: string, msg: string): void {
 
 // ─── 문단 모델 구축 ────────────────────────────────
 
-function textOfT(t: Element): string {
-  // hp:t 내부 텍스트 노드만 (markpen 등 자식 요소의 텍스트 포함)
-  let s = ""
-  const walk = (n: Node, d: number): void => {
-    if (d > 32) return
-    const kids = n.childNodes
-    if (!kids) return
-    for (let i = 0; i < kids.length; i++) {
-      const c = kids[i]
-      if (c.nodeType === 3) s += c.textContent ?? ""
-      else if (c.nodeType === 1) walk(c, d + 1)
+/** hp:t 안에서 1슬롯을 차지하는 문자형 컨트롤 (HWP5 문자 스트림 모델) */
+const CHAR_CTRL_1SLOT = new Set(["tab", "lineBreak", "hyphen", "nbSpace", "fwSpace"])
+
+/** lineseg textpos 정합용 0폭 필러 슬롯 — 컨트롤이 차지하는 문자 위치를 채운다 */
+function pushFillers(chars: ParaChar[], n: number, prId: string | null): void {
+  for (let i = 0; i < n; i++) chars.push({ ch: "", prId })
+}
+
+/**
+ * hp:t 내용을 슬롯 스트림으로 변환 — lineseg textpos 는 HWP5 문자 스트림 기준이라
+ * 텍스트 1문자=1슬롯(서로게이트 쌍은 2), tab 등 문자형 컨트롤도 1슬롯을 차지한다.
+ * markpen 등 래퍼 요소는 슬롯 없이 내용만 재귀한다.
+ * (탭 폭은 탭스톱 미해석으로 0 — 경계 정합이 우선, 폭 오차는 줄 스케일이 흡수)
+ */
+function pushTextSlots(t: Element, chars: ParaChar[], prId: string | null, depth: number): void {
+  if (depth > 32) return
+  const kids = t.childNodes
+  if (!kids) return
+  for (let i = 0; i < kids.length; i++) {
+    const c = kids[i]
+    if (c.nodeType === 3) {
+      for (const cp of c.textContent ?? "") {
+        chars.push({ ch: cp, prId })
+        if (cp.length === 2) chars.push({ ch: "", prId }) // UTF-16 두 번째 유닛 슬롯
+      }
+    } else if (c.nodeType === 1) {
+      const el = c as Element
+      const tag = ln(el)
+      if (CHAR_CTRL_1SLOT.has(tag)) {
+        chars.push({ ch: tag === "nbSpace" || tag === "fwSpace" ? " " : "", prId })
+      } else {
+        pushTextSlots(el, chars, prId, depth + 1)
+      }
     }
   }
-  walk(t, 0)
-  return s
 }
 
 function buildPara(p: Element): ParaModel {
@@ -134,7 +173,7 @@ function buildPara(p: Element): ParaModel {
       for (const ch of elements(runEl)) {
         const cn = ln(ch)
         if (cn === "t") {
-          for (const c of textOfT(ch)) chars.push({ ch: c, prId })
+          pushTextSlots(ch, chars, prId, 0)
         } else if (OBJ_TAGS.has(cn)) {
           const sz = findChildByLocalName(ch, "sz")
           const pos = findChildByLocalName(ch, "pos")
@@ -143,6 +182,12 @@ function buildPara(p: Element): ParaModel {
             inline: pos?.getAttribute("treatAsChar") === "1",
             width: num(sz, "width"), height: num(sz, "height"),
           })
+          // 확장 컨트롤(GSO 등)은 문자 스트림에서 8슬롯 — 실측: 데모 코퍼스 1,132개
+          // 멀티라인 문단에서 textpos 가 8슬롯 블록 중간에 걸린 경계 0건
+          pushFillers(chars, 8, prId)
+        } else {
+          // secPr·ctrl(구역/단 정의)·필드 등 나머지 run 자식도 확장/인라인 컨트롤 8슬롯
+          pushFillers(chars, 8, prId)
         }
       }
     } else if (tag === "linesegarray") {
@@ -218,7 +263,11 @@ function advanceTo(m: ParaModel, styles: RenderStyles, plan: LinePlan, upto: num
 
 // ─── 문단 드로잉 ───────────────────────────────────
 
-function drawPara(p: Element, ox: number, oy: number, areaW: number, ctx: Ctx, depth: number): void {
+/**
+ * @param segPages 최상위 문단 전용 — seg 인덱스별 페이지 배정 (vertpos 리셋 감지 결과).
+ *   셀/중첩 콘텐츠는 전달하지 않아 호스트의 ctx.page 를 상속한다.
+ */
+function drawPara(p: Element, ox: number, oy: number, areaW: number, ctx: Ctx, depth: number, segPages?: number[]): void {
   if (depth > 16) { warnOnce(ctx, "depth", "중첩 깊이 16 초과 — 이하 생략"); return }
   const m = buildPara(p)
   if (m.segs.length === 0) {
@@ -229,23 +278,30 @@ function drawPara(p: Element, ox: number, oy: number, areaW: number, ctx: Ctx, d
   const plans = planLines(m, ctx.styles)
   const baseV = m.segs[0].vertpos
 
-  for (const plan of plans) {
+  for (let li = 0; li < plans.length; li++) {
+    const plan = plans[li]
+    if (segPages && segPages[li] !== undefined) ctx.page = segPages[li]
     const { seg } = plan
     // charPr 단위 조각으로 분할
     let i = plan.start
     let cursor = ox + seg.horzpos + plan.xoff
     const y = oy + seg.vertpos + seg.baseline
     while (i < plan.end && i < m.chars.length) {
+      // 필러 슬롯(컨트롤·서로게이트 자리)은 그리지 않고 건너뛴다 —
+      // 인라인 개체의 폭 전진은 개체 첫 슬롯에서 1회 수행
+      if (m.chars[i].ch === "") {
+        for (const o of m.objs) if (o.inline && o.index === i) cursor += o.width
+        i++
+        continue
+      }
       const prId = m.chars[i].prId
       let j = i
       let piece = ""
-      while (j < plan.end && j < m.chars.length && m.chars[j].prId === prId) { piece += m.chars[j].ch; j++ }
-      // 이 조각 구간에 걸친 인라인 개체 폭 반영을 위해 개체 경계에서도 절단
-      for (const o of m.objs) {
-        if (o.inline && o.index > i && o.index < j) { piece = piece.slice(0, o.index - i); j = o.index; break }
-      }
+      // 필러에서 멈추므로 piece 안은 실문자뿐 — 개체 경계 절단이 자연 발생
+      while (j < plan.end && j < m.chars.length && m.chars[j].prId === prId && m.chars[j].ch !== "") { piece += m.chars[j].ch; j++ }
       // 연속 공백(2+) 경계 절단 — 공백 폭 오차(한컴 0.5em 고정 vs 뷰어 폰트)를
       // 공백 구간에 가둔다 (공무원 스페이스 정렬 원문에서 글자 벌어짐 방지)
+      // (문자열 인덱스를 슬롯 오프셋으로 쓴다 — 서로게이트 쌍이 섞이면 1슬롯 오차, 무시)
       {
         const cut = piece.search(/ {2,}/)
         if (cut > 0) { piece = piece.slice(0, cut); j = i + cut }
@@ -255,22 +311,61 @@ function drawPara(p: Element, ox: number, oy: number, areaW: number, ctx: Ctx, d
         }
       }
       const st = (prId != null ? ctx.styles.charPr.get(prId) : undefined) ?? DEFAULT_CHAR
-      const w = measureTextWidth(piece, st.height, st.ratio, { spacingPct: st.spacing }) * plan.scale
-      if (piece.trim().length > 0) {
-        const attrs: string[] = [`x="${pt(cursor)}"`, `y="${pt(y)}"`, `font-size="${pt(st.height)}"`]
-        if ([...piece].length > 1 && w > 50) {
-          attrs.push(`textLength="${pt(w)}"`, `lengthAdjust="${plan.scale < 1 ? "spacingAndGlyphs" : "spacing"}"`)
+
+      // 텍스트 세그먼트 1개를 렌더하고 전진폭 반환. hit=true 면 형광펜 배경 rect 를
+      // 텍스트 앞에 깐다. 세그먼트마다 자체 textLength 를 쓰므로 rect(hit)와 글자가
+      // 완전히 같은 폭·위치로 계산돼 형광펜이 어긋나지 않는다.
+      const renderSeg = (text: string, cx: number, hit: boolean): number => {
+        const sw = measureTextWidth(text, st.height, st.ratio, { spacingPct: st.spacing }) * plan.scale
+        if (hit) {
+          emit(ctx, `<rect x="${pt(cx)}" y="${pt(oy + seg.vertpos)}" width="${pt(sw)}" height="${pt(seg.textheight)}" fill="#ffd54f" fill-opacity="0.45"/>`)
         }
-        if (st.bold) attrs.push(`font-weight="bold"`)
-        if (st.italic) attrs.push(`font-style="italic"`)
-        if (st.underline) attrs.push(`text-decoration="underline"`)
-        if (st.color) attrs.push(`fill="${escapeXml(st.color)}"`)
-        ctx.svg.push(`<text ${attrs.join(" ")}>${escapeXml(piece)}</text>`)
-        ctx.stats.texts++
+        if (text.trim().length > 0) {
+          const attrs: string[] = [`x="${pt(cx)}"`, `y="${pt(y)}"`, `font-size="${pt(st.height)}"`]
+          if ([...text].length > 1 && sw > 50) {
+            attrs.push(`textLength="${pt(sw)}"`, `lengthAdjust="${plan.scale < 1 ? "spacingAndGlyphs" : "spacing"}"`)
+          }
+          if (st.bold) attrs.push(`font-weight="bold"`)
+          if (st.italic) attrs.push(`font-style="italic"`)
+          if (st.underline) attrs.push(`text-decoration="underline"`)
+          if (st.color) attrs.push(`fill="${escapeXml(st.color)}"`)
+          emit(ctx, `<text ${attrs.join(" ")}>${escapeXml(text)}</text>`)
+          ctx.stats.texts++
+        }
+        return sw
       }
-      cursor += w
-      // 개체 경계에서 끊었으면 개체 폭만큼 전진
-      for (const o of m.objs) if (o.inline && o.index === j) cursor += o.width
+
+      // 형광펜 매치 구간 수집 → 병합(겹침 제거) → [평문·매치·평문…] 분할 렌더
+      const merged: Array<[number, number]> = []
+      if (ctx.highlights.length > 0 && piece.trim().length > 0) {
+        const found: Array<[number, number]> = []
+        const lower = piece.toLowerCase()
+        for (const term of ctx.highlights) {
+          for (let f = lower.indexOf(term); f !== -1; f = lower.indexOf(term, f + term.length)) {
+            found.push([f, f + term.length])
+          }
+        }
+        found.sort((a, b) => a[0] - b[0])
+        for (const [s, e] of found) {
+          const tail = merged[merged.length - 1]
+          if (tail && s <= tail[1]) tail[1] = Math.max(tail[1], e)
+          else merged.push([s, e])
+        }
+      }
+
+      if (merged.length === 0) {
+        cursor += renderSeg(piece, cursor, false)
+      } else {
+        let segCur = cursor
+        let last = 0
+        for (const [s, e] of merged) {
+          segCur += renderSeg(piece.slice(last, s), segCur, false)
+          segCur += renderSeg(piece.slice(s, e), segCur, true)
+          last = e
+        }
+        segCur += renderSeg(piece.slice(last), segCur, false)
+        cursor = segCur
+      }
       i = j
     }
   }
@@ -278,13 +373,20 @@ function drawPara(p: Element, ox: number, oy: number, areaW: number, ctx: Ctx, d
   // 개체 배치 — 인라인은 소속 줄 위치, 앵커는 hp:pos 해석
   for (const o of m.objs) {
     if (o.inline) {
-      let plan = plans[0]
-      for (const pl of plans) if (pl.start <= o.index && (o.index < pl.end || pl === plans[plans.length - 1])) plan = pl
+      let planIdx = 0
+      for (let k = 0; k < plans.length; k++) {
+        const pl = plans[k]
+        if (pl.start <= o.index && (o.index < pl.end || k === plans.length - 1)) planIdx = k
+      }
+      const plan = plans[planIdx]
+      if (segPages && segPages[planIdx] !== undefined) ctx.page = segPages[planIdx]
       const x = ox + plan.seg.horzpos + plan.xoff + advanceTo(m, ctx.styles, plan, o.index)
       // 개체가 줄보다 낮으면 baseline 위에 얹고, 줄을 채우는 개체(th==h)는 줄 상단
       const yTop = oy + plan.seg.vertpos + Math.max(0, plan.seg.baseline - o.height)
       drawObject(o, x, yTop, baseV, areaW, ctx, depth)
     } else {
+      // 앵커 좌표는 첫 seg(baseV) 기준이므로 첫 seg 의 페이지에 귀속
+      if (segPages && segPages[0] !== undefined) ctx.page = segPages[0]
       const { x, y } = anchorObject(o, ox, oy, baseV, areaW, ctx)
       drawObject(o, x, y, baseV, areaW, ctx, depth)
     }
@@ -446,7 +548,7 @@ function drawTable(tbl: Element, tx: number, ty: number, ctx: Ctx, depth: number
   }))
   for (const g of geom) {
     const bf = g.c.bfId != null ? ctx.styles.borderFill.get(g.c.bfId) : undefined
-    if (bf?.fill) ctx.svg.push(`<rect x="${pt(g.x)}" y="${pt(g.y)}" width="${pt(g.w)}" height="${pt(g.h)}" fill="${escapeXml(bf.fill)}"/>`)
+    if (bf?.fill) emit(ctx, `<rect x="${pt(g.x)}" y="${pt(g.y)}" width="${pt(g.w)}" height="${pt(g.h)}" fill="${escapeXml(bf.fill)}"/>`)
   }
   for (const g of geom) {
     const { c } = g
@@ -465,10 +567,10 @@ function drawTable(tbl: Element, tx: number, ty: number, ctx: Ctx, depth: number
   for (const g of geom) {
     const bf = g.c.bfId != null ? ctx.styles.borderFill.get(g.c.bfId) : undefined
     if (!bf) continue
-    if (bf.top) ctx.svg.push(edgeLine(g.x, g.y, g.x + g.w, g.y, bf.top))
-    if (bf.bottom) ctx.svg.push(edgeLine(g.x, g.y + g.h, g.x + g.w, g.y + g.h, bf.bottom))
-    if (bf.left) ctx.svg.push(edgeLine(g.x, g.y, g.x, g.y + g.h, bf.left))
-    if (bf.right) ctx.svg.push(edgeLine(g.x + g.w, g.y, g.x + g.w, g.y + g.h, bf.right))
+    if (bf.top) emit(ctx, edgeLine(g.x, g.y, g.x + g.w, g.y, bf.top))
+    if (bf.bottom) emit(ctx, edgeLine(g.x, g.y + g.h, g.x + g.w, g.y + g.h, bf.bottom))
+    if (bf.left) emit(ctx, edgeLine(g.x, g.y, g.x, g.y + g.h, bf.left))
+    if (bf.right) emit(ctx, edgeLine(g.x + g.w, g.y, g.x + g.w, g.y + g.h, bf.right))
   }
 }
 
@@ -481,25 +583,33 @@ function drawPic(pic: Element, x: number, y: number, ctx: Ctx): void {
   const ref = img?.getAttribute("binaryItemIDRef")
   const loaded = ref != null ? ctx.images.get(ref) : undefined
   if (!loaded) {
-    ctx.svg.push(`<rect x="${pt(x)}" y="${pt(y)}" width="${pt(w)}" height="${pt(h)}" fill="#eee" stroke="#c00" stroke-width="0.5"/>`)
+    emit(ctx, `<rect x="${pt(x)}" y="${pt(y)}" width="${pt(w)}" height="${pt(h)}" fill="#eee" stroke="#c00" stroke-width="0.5"/>`)
     warnOnce(ctx, `img:${ref}`, `이미지 바이너리 누락: ${ref ?? "(ref 없음)"}`)
     return
   }
   ctx.stats.images++
-  const orgSz = findChildByLocalName(pic, "orgSz")
+  // imgClip 좌표계는 imgDim(이미지 내용 상자) 기준이다 — orgSz(최초 삽입 크기)가 아니다.
+  // 실측(데모 코퍼스 pic 267개): clip==dim 254개(크롭 없음)·실제 크롭 8개 모두 dim 기준.
+  // orgSz 로 비교하면 리사이즈된 로고(dim<org)가 좌상단 코너로 잘못 잘려 로고가 깨진다.
   const clip = findChildByLocalName(pic, "imgClip")
-  const orgW = num(orgSz, "width"), orgH = num(orgSz, "height")
+  const imgDim = findChildByLocalName(pic, "imgDim")
+  const orgSz = findChildByLocalName(pic, "orgSz")
+  const dimW = num(imgDim, "dimwidth"), dimH = num(imgDim, "dimheight")
+  // 참조(전체 내용) 공간: imgDim 우선, 없으면 orgSz 폴백
+  const refW = dimW > 0 ? dimW : num(orgSz, "width")
+  const refH = dimH > 0 ? dimH : num(orgSz, "height")
   const cl = num(clip, "left"), ct = num(clip, "top")
-  const cr = num(clip, "right", orgW), cb = num(clip, "bottom", orgH)
-  const cropped = orgW > 0 && orgH > 0 && clip != null && (cl > 0 || ct > 0 || cr < orgW || cb < orgH) && cr > cl && cb > ct
+  const cr = num(clip, "right", refW), cb = num(clip, "bottom", refH)
+  const cropped =
+    refW > 0 && refH > 0 && clip != null && (cl > 0 || ct > 0 || cr < refW || cb < refH) && cr > cl && cb > ct
   if (cropped) {
-    // 원본 좌표계 viewBox로 크롭 창을 내고, 이미지는 원본 크기로 깐다
-    ctx.svg.push(
+    // 참조 좌표계 viewBox로 크롭 창을 내고, 이미지는 전체 내용 크기로 깐다
+    emit(ctx,
       `<svg x="${pt(x)}" y="${pt(y)}" width="${pt(w)}" height="${pt(h)}" viewBox="${pt(cl)} ${pt(ct)} ${pt(cr - cl)} ${pt(cb - ct)}" preserveAspectRatio="none">` +
-      `<image x="0" y="0" width="${pt(orgW)}" height="${pt(orgH)}" preserveAspectRatio="none" href="${loaded.dataUri}"/></svg>`,
+      `<image x="0" y="0" width="${pt(refW)}" height="${pt(refH)}" preserveAspectRatio="none" href="${loaded.dataUri}"/></svg>`,
     )
   } else {
-    ctx.svg.push(`<image x="${pt(x)}" y="${pt(y)}" width="${pt(w)}" height="${pt(h)}" preserveAspectRatio="none" href="${loaded.dataUri}"/>`)
+    emit(ctx, `<image x="${pt(x)}" y="${pt(y)}" width="${pt(w)}" height="${pt(h)}" preserveAspectRatio="none" href="${loaded.dataUri}"/>`)
   }
 }
 
@@ -583,22 +693,64 @@ export async function renderHwpxToSvg(input: ArrayBuffer | Uint8Array, options?:
   const BODY_H = PH - MT - num(margin, "bottom", 4252) - num(margin, "footer", 0)
   const BODY_W = PW - ML - num(margin, "right", 8504)
 
+  // 페이지 분할 프리패스 — 최상위 lineseg vertpos는 페이지 로컬(페이지마다 0부터)이라
+  // 역행 지점이 곧 페이지 경계다. 다단(colCount>1)은 단 이동도 vertpos가 리셋되지만
+  // horzpos가 오른쪽으로 점프하므로, horzpos가 왼쪽으로 돌아올 때만 새 페이지로 본다.
+  const colPr = findFirst(root, "colPr")
+  const multiCol = num(colPr, "colCount", 1) > 1
+  const paraSegPages = new Map<Element, number[]>()
+  let nPages = 1
+  let maxTopV = 0
+  {
+    let prevV = Number.NEGATIVE_INFINITY
+    let prevH = Number.NEGATIVE_INFINITY
+    let cur = 0
+    for (const p of elements(root)) {
+      if (ln(p) !== "p") continue
+      const lsa = findChildByLocalName(p, "linesegarray")
+      const segEls = lsa ? elements(lsa).filter(s => ln(s) === "lineseg") : []
+      const pagesOf: number[] = []
+      for (const s of segEls) {
+        const v = num(s, "vertpos")
+        const h = num(s, "horzpos")
+        if (v < prevV && (!multiCol || h <= prevH)) cur++
+        pagesOf.push(cur)
+        maxTopV = Math.max(maxTopV, v + num(s, "textheight", 1000))
+        prevV = v
+        prevH = h
+      }
+      paraSegPages.set(p, pagesOf)
+      nPages = Math.max(nPages, cur + 1)
+    }
+  }
+
   const ctx: Ctx = {
-    svg: [], geom: { PW, PH, ML, MT, BODY_W, BODY_H }, styles, images,
+    pages: Array.from({ length: nPages }, () => []), page: 0,
+    geom: { PW, PH, ML, MT, BODY_W, BODY_H }, styles, images,
+    highlights: (options?.highlights ?? []).map(s => s.trim().toLowerCase()).filter(s => s.length > 0),
     warnings, warned: new Set(), stats: { texts: 0, images: 0, tables: 0 },
   }
 
-  // 최상위 문단 — 1페이지 분량만 (본문영역을 벗어난 문단은 이후 페이지)
   for (const p of elements(root)) {
     if (ln(p) !== "p") continue
-    const segs = findChildByLocalName(p, "linesegarray")
-    const first = segs ? elements(segs)[0] : null
-    if (first && num(first, "vertpos") > BODY_H) continue
-    drawPara(p, ML, MT, BODY_W, ctx, 0)
+    drawPara(p, ML, MT, BODY_W, ctx, 0, paraSegPages.get(p))
   }
 
-  // width/height는 pt 단위 명시 — 단위 없는 px로 두면 A4 실물(96dpi 기준)보다 25% 작게 보인다
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${pt(PW)} ${pt(PH)}" width="${pt(PW)}pt" height="${pt(PH)}pt" font-family="'HCR Batang','함초롬바탕','Hancom Batang',AppleMyungjo,'Noto Serif CJK KR',serif" xml:space="preserve">\n` +
-    `<rect width="100%" height="100%" fill="white"/>\n${ctx.svg.join("\n")}\n</svg>`
-  return { svg, width: Math.round(PW) / 100, height: Math.round(PH) / 100, warnings, stats: ctx.stats }
+  // 리셋이 없는데 본문이 페이지를 넘는 파일(누적 vertpos 기록본) 방어 —
+  // 한 페이지로 두되 캔버스만 내용 끝까지 늘려 잘림을 막는다.
+  const pageH = nPages === 1 ? Math.max(PH, MT + maxTopV + 2000) : PH
+  const GAP = 2400 // 페이지 사이 시각 간격 (24pt)
+  const totalH = nPages * pageH + (nPages - 1) * GAP
+
+  const pagesSvg = ctx.pages.map((buf, k) =>
+    `<g data-page="${k + 1}" transform="translate(0 ${pt(k * (pageH + GAP))})">` +
+    `<rect width="${pt(PW)}" height="${pt(pageH)}" fill="white" stroke="#c9c7c4" stroke-width="0.75"/>` +
+    `<g clip-path="url(#pgclip)">\n${buf.join("\n")}\n</g></g>`,
+  ).join("\n")
+
+  // width/height는 pt 단위 명시 — 단위 없는 px로 두면 A4 실물(96dpi 기준)보다 25% 작게 보인다 (v3.10.1)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${pt(PW)} ${pt(totalH)}" width="${pt(PW)}pt" height="${pt(totalH)}pt" font-family="'HCR Batang','함초롬바탕','Hancom Batang',AppleMyungjo,'Noto Serif CJK KR',serif" xml:space="preserve">\n` +
+    `<defs><clipPath id="pgclip"><rect x="0" y="0" width="${pt(PW)}" height="${pt(pageH)}"/></clipPath></defs>\n` +
+    `${pagesSvg}\n</svg>`
+  return { svg, width: Math.round(PW) / 100, height: Math.round(totalH) / 100, pageCount: nPages, warnings, stats: ctx.stats }
 }

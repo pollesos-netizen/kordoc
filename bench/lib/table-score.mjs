@@ -183,6 +183,23 @@ function mergeGrids(grids) {
 
 const tupleKey = a => `${a.r},${a.c},${a.rs},${a.cs}`
 
+// 자동부호 장식 토큰 1개 — 번호형(1. 1) (1) 가. (가) a. Ⅰ ① ㉮)과 단일 부호문자
+// (문자/숫자가 아닌 1글자: - ※ • □ ◆ 등). 문자/숫자 단독은 불허 — 중복문자 버그 마스킹 방지.
+const HEAD_DECOR_RE = /^[ \t]*(?:\d{1,3}[.)]|\(\d{1,3}\)|[가-힣][.)]|\([가-힣]\)|[A-Za-z][.)]|\([A-Za-z]\)|[①-㊿⑴-⒇⒈-⒛㉠-㉿ⓐ-ⓩⅰ-ⅻⅠ-Ⅻ]|[^\p{L}\p{N}\s])[ \t]*/u
+
+/**
+ * 자동부호(NUMBER/BULLET) 문단 장식 관용 — ref XML(hp:t)은 무장식이므로, ref가 header.xml
+ * paraPr로 특정한 줄(headingLines)에 한해 IR 선두 장식 토큰 1개를 제거해 본다.
+ * 줄 수가 어긋나면 관용 포기(null) — 리터럴 부호 줄은 엄격 비교 유지 (드롭 회귀 검출 보존).
+ */
+function stripHeadingDecor(refText, irText, headingLines) {
+  const refLines = refText.split("\n")
+  const irLines = irText.split("\n")
+  if (refLines.length !== irLines.length) return null
+  const set = new Set(headingLines)
+  return irLines.map((ln, i) => (set.has(i) ? ln.replace(HEAD_DECOR_RE, "") : ln)).join("\n")
+}
+
 /**
  * 표 채점 본체.
  * refTables: ref 추출기의 전체 표 목록 — 중첩표 포함 (post-order = collectIrGrids 순서)
@@ -196,6 +213,7 @@ export function scoreTables(refTables, irGrids) {
   let cellTotal = 0, cellExact = 0
   let contentNum = 0, contentDen = 0
   let splitTables = 0
+  let decorForgiven = 0
 
   for (let i = 0; i < refTables.length; i++) {
     const ref = refTables[i]
@@ -225,7 +243,12 @@ export function scoreTables(refTables, irGrids) {
       const ic = irByPos.get(`${rc.r},${rc.c}`)
       // 공백은 신뢰 불가(파서 균등배분 결합·셀 내 개행 등) → spaceless 비교 (pitfall #9)
       const a = normKey(rc.text)
-      const b = normKey(ic?.text ?? "")
+      let bRaw = ic?.text ?? ""
+      if (ic && rc.headingLines?.length && normKey(bRaw) !== a) {
+        const stripped = stripHeadingDecor(rc.text, bRaw, rc.headingLines)
+        if (stripped !== null && normKey(stripped) === a) { bRaw = stripped; decorForgiven++ }
+      }
+      const b = normKey(bRaw)
       cellTotal++
       const maxLen = Math.max(a.length, b.length, 1)
       // 중첩표 보유 셀도 일반 비교 — irAnchors가 부모 셀 "자기 텍스트"만 추출하므로(v3.0)
@@ -263,6 +286,7 @@ export function scoreTables(refTables, irGrids) {
     contentNum, contentDen,
     contentNED: contentDen ? contentNum / contentDen : 1,
     splitTables,
+    decorForgiven,
     unmatchedRef: details.filter(d => !d.matched).length,
     unmatchedIr: irGrids.length - usedIr.size,
     details,

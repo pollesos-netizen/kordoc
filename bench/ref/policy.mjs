@@ -51,7 +51,9 @@ export const GATES = {
   hwpx: {
     recallMicro: 0.999, recallDoc: 0.99, missRun: 20,
     phantom: 0.005, blacklistHits: 0,
-    tableExact: 0.99, cellF1: 0.999, contentNED: 0.999, cellExact: 0.995,
+    // contentNED/cellExact 상향(0.999/0.995 → 0.9995/0.999): 자동부호(NUMBER/BULLET)
+    // 장식 관용 도입으로 85건 전건 1.0 도달 (2026-07-03) — 만점 잠금
+    tableExact: 0.99, cellF1: 0.999, contentNED: 0.9995, cellExact: 0.999,
     orderDoc: 0.98, orderAvg: 0.995,
     eqPresence: 0.99, footnotePresence: 0.999, headerViolations: 0,
   },

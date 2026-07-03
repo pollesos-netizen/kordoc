@@ -199,6 +199,22 @@ export async function extractRef(buffer) {
       return na - nb
     })
 
+  // 자동부호(NUMBER/BULLET) paraPr id — 한컴은 이 문단 앞에 번호/부호를 렌더하지만
+  // hp:t 원문에는 없다. 셀 채점의 장식 관용(줄 단위) 판정에만 사용 (값 해석은 안 함 —
+  // 번호 값 자체의 정확성은 파서 유닛 테스트 소관).
+  const headingParaIds = new Set()
+  const headerFile = Object.values(zip.files).find(f => /(^|\/)header\.xml$/i.test(f.name))
+  if (headerFile) {
+    const headerRoot = parseXmlLite(await headerFile.async("string"))
+    for (const pr of findAllDesc(headerRoot, "parapr")) {
+      const h = findDesc(pr, "heading")
+      const type = (h?.attrs.type ?? "NONE").toUpperCase()
+      if ((type === "NUMBER" || type === "BULLET") && pr.attrs.id !== undefined) {
+        headingParaIds.add(pr.attrs.id)
+      }
+    }
+  }
+
   const counters = newPolicyCounters()
   const units = []
   const tables = []
@@ -389,7 +405,7 @@ export async function extractRef(buffer) {
   }
 
   function processCell(tc, depth) {
-    const cell = { textParts: [], colAddr: undefined, rowAddr: undefined, colSpan: 1, rowSpan: 1, hasNested: false, hasIrContent: false }
+    const cell = { textParts: [], headingPartIdx: new Set(), colAddr: undefined, rowAddr: undefined, colSpan: 1, rowSpan: 1, hasNested: false, hasIrContent: false }
     const walkTc = node => {
       for (const ch of node.children) {
         if (typeof ch === "string") continue
@@ -410,7 +426,11 @@ export async function extractRef(buffer) {
           }
           case "p": case "para": {
             const { text, structural } = collectPara(ch)
-            if (text.trim()) cell.textParts.push(text.trim())
+            if (text.trim()) {
+              cell.textParts.push(text.trim())
+              // 자동부호 문단 — 파서는 번호/부호를 렌더하지만 원문 텍스트엔 없음 (장식 관용 대상)
+              if (headingParaIds.has(ch.attrs.parapridref)) cell.headingPartIdx.add(cell.textParts.length - 1)
+            }
             // 중첩표/글상자 — 셀 내부에서 즉시 처리 (post-order: 부모보다 먼저 tables[]에 들어감).
             // 글상자 텍스트는 cell.textParts로 합류 (파서 mergeBlocksIntoCell 미러)
             if (structural.some(s => s.type === "tbl")) cell.hasNested = true
@@ -426,6 +446,15 @@ export async function extractRef(buffer) {
     }
     walkTc(tc)
     cell.text = cell.textParts.join("\n")
+    // 장식 관용 줄 인덱스 — cell.text 기준 (part 내부 개행 반영, 부호는 문단 첫 줄에만 렌더)
+    if (cell.headingPartIdx.size) {
+      cell.headingLines = []
+      let line = 0
+      for (let i = 0; i < cell.textParts.length; i++) {
+        if (cell.headingPartIdx.has(i)) cell.headingLines.push(line)
+        line += cell.textParts[i].split("\n").length
+      }
+    }
     return cell
   }
 
@@ -465,7 +494,7 @@ function buildRefGrid(rawRows, counters) {
     for (const row of rawRows) {
       for (const c of row) {
         const r = c.rowAddr ?? 0, cc = c.colAddr ?? 0
-        anchors.push({ r, c: cc, rs: c.rowSpan, cs: c.colSpan, text: c.text, hasNested: c.hasNested, hasIrContent: c.hasIrContent })
+        anchors.push({ r, c: cc, rs: c.rowSpan, cs: c.colSpan, text: c.text, hasNested: c.hasNested, hasIrContent: c.hasIrContent, headingLines: c.headingLines })
         if (r + c.rowSpan > rows) rows = r + c.rowSpan
         if (cc + c.colSpan > cols) cols = cc + c.colSpan
       }
@@ -481,7 +510,7 @@ function buildRefGrid(rawRows, counters) {
       let ci = 0
       for (const c of rawRows[ri]) {
         while (occupied[ri][ci]) ci++
-        anchors.push({ r: ri, c: ci, rs: c.rowSpan, cs: c.colSpan, text: c.text, hasNested: c.hasNested, hasIrContent: c.hasIrContent })
+        anchors.push({ r: ri, c: ci, rs: c.rowSpan, cs: c.colSpan, text: c.text, hasNested: c.hasNested, hasIrContent: c.hasIrContent, headingLines: c.headingLines })
         for (let dr = 0; dr < c.rowSpan && ri + dr < rows; dr++) {
           occupied[ri + dr] = occupied[ri + dr] ?? []
           for (let dc = 0; dc < c.colSpan; dc++) occupied[ri + dr][ci + dc] = true

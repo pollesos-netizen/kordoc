@@ -296,17 +296,40 @@ function dropShadingStacks(lines: LineSegment[], dir: "h" | "v"): LineSegment[] 
   }
 
   const dropped = new Set<LineSegment>()
+  const coord = (l: LineSegment): number => (dir === "h" ? l.y1 : l.x1)
   for (const group of groups.values()) {
     if (group.length < STACK_MIN_LINES) continue
-    group.sort((a, b) => (dir === "h" ? a.y1 - b.y1 : a.x1 - b.x1))
+    group.sort((a, b) => coord(a) - coord(b))
     let runStart = 0
     for (let i = 1; i <= group.length; i++) {
-      const gap = i < group.length
-        ? (dir === "h" ? group[i].y1 - group[i - 1].y1 : group[i].x1 - group[i - 1].x1)
-        : Infinity
+      const gap = i < group.length ? coord(group[i]) - coord(group[i - 1]) : Infinity
       if (gap < STACK_GAP) continue
       if (i - runStart >= STACK_MIN_LINES) {
-        for (let j = runStart; j < i; j++) dropped.add(group[j])
+        // 말단 트리밍 — 스택은 같은 그리기 루프 산물이라 lineWidth·줄간격(pitch)이
+        // 균일하다. 지배 폭과 다르거나 내부 pitch보다 크게 벌어진 말단 줄은
+        // 플러시(패딩 0) 글상자의 실제 상하 테두리이므로 스택과 함께 삼키지 않는다.
+        let s = runStart
+        let e = i - 1
+        const wKey = (l: LineSegment): number => Math.round(l.lineWidth * 100)
+        const wCount = new Map<number, number>()
+        for (let j = s; j <= e; j++) wCount.set(wKey(group[j]), (wCount.get(wKey(group[j])) ?? 0) + 1)
+        let domW = 0
+        let domN = 0
+        for (const [w, n] of wCount) if (n > domN) { domW = w; domN = n }
+        const pitches: number[] = []
+        for (let j = s + 1; j <= e; j++) pitches.push(coord(group[j]) - coord(group[j - 1]))
+        pitches.sort((a, b) => a - b)
+        const medPitch = pitches[Math.floor(pitches.length / 2)] ?? 0
+        const edgeAlien = (j: number, inwardGap: number): boolean =>
+          wKey(group[j]) !== domW || (medPitch > 0 && inwardGap > medPitch * 1.8)
+        while (e - s + 1 >= STACK_MIN_LINES) {
+          if (edgeAlien(s, coord(group[s + 1]) - coord(group[s]))) { s++; continue }
+          if (edgeAlien(e, coord(group[e]) - coord(group[e - 1]))) { e--; continue }
+          break
+        }
+        if (e - s + 1 >= STACK_MIN_LINES) {
+          for (let j = s; j <= e; j++) dropped.add(group[j])
+        }
       }
       runStart = i
     }

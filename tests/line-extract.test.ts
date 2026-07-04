@@ -7,7 +7,7 @@
 
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { closeOpenTableEdges } from "../src/pdf/line-detector.js"
+import { closeOpenTableEdges, preprocessLines } from "../src/pdf/line-detector.js"
 import type { LineSegment } from "../src/pdf/line-detector.js"
 
 const h = (y: number): LineSegment => ({ x1: 100, y1: y, x2: 500, y2: y, lineWidth: 0.5 })
@@ -57,5 +57,35 @@ describe("closeOpenTableEdges — 상하 스택 표 용접 방지", () => {
     // 분할되지 않고 전체 y범위(600~760)를 닫는 테두리
     const spanning = synth.filter(s => s.y1 <= 601 && s.y2 >= 759)
     assert.ok(spanning.length >= 1, `단일 표로 유지돼 전체를 닫아야 함: ${JSON.stringify(synth)}`)
+  })
+})
+
+describe("dropShadingStacks — 플러시 테두리 삼킴 방지 (리뷰 #12)", () => {
+  const hl = (y: number, w: number): LineSegment => ({ x1: 100, y1: y, x2: 500, y2: y, lineWidth: w })
+
+  it("스택과 x범위·근접이 동일해도 폭이 다른 말단 테두리는 살린다", () => {
+    const stack: LineSegment[] = []
+    for (let i = 0; i < 20; i++) stack.push(hl(101.5 + i * 0.5, 0.1))
+    const lines = [hl(100, 0.75), ...stack, hl(112.5, 0.75)] // 패딩 0 글상자 상하변
+    const { horizontals } = preprocessLines(lines, [])
+    const ys = horizontals.map(l => l.y1)
+    assert.ok(ys.includes(100), "상변 테두리가 스택과 함께 드랍됨")
+    assert.ok(ys.includes(112.5), "하변 테두리가 스택과 함께 드랍됨")
+    assert.ok(!ys.some(y => y > 101 && y < 112), "그라디언트 스택은 드랍돼야 함")
+  })
+
+  it("폭까지 같아도 내부 pitch보다 크게 벌어진 말단은 테두리로 살린다", () => {
+    const stack: LineSegment[] = []
+    for (let i = 0; i < 20; i++) stack.push(hl(101.5 + i * 0.5, 0.1))
+    const lines = [hl(100, 0.1), ...stack] // 같은 0.1pt 폭, 1.5pt 간격(내부 0.5pt의 3배)
+    const { horizontals } = preprocessLines(lines, [])
+    assert.ok(horizontals.some(l => l.y1 === 100), "pitch-이질 말단이 드랍됨")
+  })
+
+  it("순수 스택(테두리 없음)은 기존대로 전부 드랍", () => {
+    const stack: LineSegment[] = []
+    for (let i = 0; i < 26; i++) stack.push(hl(200 + i * 0.5, 0.1))
+    const { horizontals } = preprocessLines(stack, [])
+    assert.equal(horizontals.length, 0)
   })
 })

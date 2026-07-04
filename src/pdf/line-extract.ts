@@ -328,6 +328,8 @@ const EDGE_INSET = 15
 const EDGE_NEAR = 10
 /** 선 교차 판정 여유 (table-grid CONNECT_TOL과 동일) */
 const EDGE_CONNECT_TOL = 5
+/** 상하 스택 표 분할: 그룹 내 세로 간격이 중앙값의 이 배를 넘으면 표 경계로 보고 쪼갬 */
+const EDGE_YGAP_SPLIT_K = 2.5
 /** 체인 뷰: 같은 논리 괘선으로 묶는 y 허용 오차 (pt) */
 const CHAIN_Y_TOL = 1.5
 /** 체인 뷰: 콜리니어 세그먼트 연결 최대 간격 (pt) */
@@ -402,8 +404,31 @@ export function closeOpenTableEdges(
     if (!placed) groups.push([hl])
   }
 
-  const synthesized: LineSegment[] = []
+  // 1b) y-간격 상한 분할 — 폭이 같아 한 그룹에 묶인 상하 스택 표를, 표 사이의 큰 세로
+  //     간격에서 쪼갠다(사이 본문을 관통하는 가상 테두리 용접 방지). 간격이 중앙값의
+  //     EDGE_YGAP_SPLIT_K배를 넘고 양쪽이 각각 최소 괘선 수를 만족할 때만 분할하므로,
+  //     행 간격이 균일한 연속 단일 표에는 발동하지 않는다(무회귀).
+  const splitGroups: LineSegment[][] = []
   for (const g of groups) {
+    const sorted = [...g].sort((a, b) => a.y1 - b.y1)
+    const gaps: number[] = []
+    for (let i = 1; i < sorted.length; i++) gaps.push(sorted[i].y1 - sorted[i - 1].y1)
+    const median = gaps.length ? [...gaps].sort((a, b) => a - b)[gaps.length >> 1] : 0
+    const threshold = median * EDGE_YGAP_SPLIT_K
+    let cur: LineSegment[] = sorted.length ? [sorted[0]] : []
+    for (let i = 1; i < sorted.length; i++) {
+      if (median > 0 && sorted[i].y1 - sorted[i - 1].y1 > threshold
+          && cur.length >= EDGE_MIN_RULES && sorted.length - i >= EDGE_MIN_RULES) {
+        splitGroups.push(cur)
+        cur = []
+      }
+      cur.push(sorted[i])
+    }
+    if (cur.length) splitGroups.push(cur)
+  }
+
+  const synthesized: LineSegment[] = []
+  for (const g of splitGroups) {
     if (g.length < EDGE_MIN_RULES) continue
     let yMin = Infinity, yMax = -Infinity, x1 = 0, x2 = 0
     for (const hl of g) {

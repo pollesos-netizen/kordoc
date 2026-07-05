@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.16.1] - 2026-07-05
+
+통합 검증 프로덕션 리뷰(v3.15/3.16 발행분 적대 리뷰)의 신규 결함 + 전 클러스터 프레시 스켑틱 재검증에서 발견된 잔여 결함을 수정한다. 대부분 "성공 메시지 + 조용히 틀린 산출물" 계열 — 공문서 자동화에서 무신호 오출력을 차단한다.
+
+### Fixed
+
+- **도장(place_seal)**: rowSpan 결재란에서 도장이 한 열 왼쪽에 찍히던 것(그리드 열폭 테이블로 면역, seal-1) · 가로 병합(colspan) 제목행 아래 데이터행에서 병합폭 이중계상으로 도장이 표 밖에 찍히던 것(colSpan>1 셀 제외, seal-1 colspan) · 중첩표 셀 앵커에서 바깥 셀 오프셋 미가산으로 도장이 옆 셀로 밀리던 것(조상 셀 체인 가산 — 한컴 실측으로 '항상 페이지 단' 원점 모델 확정, seal-2) · CLI --size-mm NaN·음수 검증, 이미지 매직바이트 검증, 섹션 숫자 정렬, 앵커 run charPr 폴백, 탭/다중줄 근사 경고(seal-4~8).
+- **차트(chart)**: 천단위 콤마 `1,000`이 [1,0,2,0]으로 오염되던 값 파서(자릿수 패턴 결합, chart-1) · 기안문 표준번호 모드에서 항목 사이 차트가 항목번호 run을 끊던 것(passThrough에 chart 배선, chart-2) · CRLF 마크다운에서 펜스 감지 전멸+헤딩·리스트 파괴(md 입구 개행 정규화, chart-3) · 계열이 라벨보다 길 때 꼬리 값 무음 절단(라벨 확장 보존, chart-5) · 비숫자 토큰·개수 불일치·들여쓴 펜스·PrvText·size 클램프(chart-4·6·7·8).
+- **secure-fill**: require_unique 가드가 기본 경로(hwpx-preserve)와 전략0(인셀 패턴)에서 무력하던 것 — 전 전략 key 배선 + 접두사 폴백 오염 차단(sfill-1·2) · 날짜/전화/마스크 서식 엣지(미패딩·대소문자·02 지역번호·자릿수 불일치)·mask_values verify 정규화·출력 PII 마스킹(sfill-3~8).
+- **CLI/플러그인**: `fill`·`watch`의 `-o`/`-d`/`--format` 루트 옵션 가로채기로 파일 미생성·출력 무시되던 것(루트 폴백 배선, plugin-1·5) · pdfjs-dist optionalDependencies 승격, SKILL/README 문구·차트 예시 정정(plugin-2·3·4).
+- **수식·왕복**: escapeGfm이 `$…$` 수식 스팬 내부 `~`/`*`를 이스케이프하던 것, replaceFrac 분자 비인접 삭제, findKeywordToken·분자 역탐색 공백류(개행·탭) 정합, `[별표 N]`·이탤릭 escapeGfm, render-worker null 라인 크래시·quit 종료(eqrt-1~6).
+- **PDF 표**: 개방변 표 y-간격 상한이 병합 큰 행을 두 표로 절단하던 회귀 — 밴드 관통 수직선을 표 x-범위로 국소화 인지(pline-1·2) · fill 유래 선분 스테일 폭으로 폭 판별자가 무력화되던 것(fromFill 태깅, pline-3).
+- **HWP5 왕복(§4b)**: 표기 무변경(`\n`↔`<br>`) 오판, 다중줄 verification 자기잔차, `<br><br>` 빈 줄, 음수 gridBefore 클램프(hwp5-1·2·4·5).
+- **게이트·렌더**: 시각 게이트 baseline 부재=실패(박제는 --update 분리), 해밍 임계 48→16(재캡처 노이즈 0 실측), score 모수하한 면제, `--case` 무매치 실패(gate-1~4) · 렌더 진입점 압축폭탄 가드(압축해제 전 검사, reflow-1).
+
+### Added
+- **bench:visual 케이스 2종**: seal-colspan(가로 병합 제목행)·seal-nested(중첩표) — seal-1·seal-2 도장 배치를 한컴 실렌더 aHash 게이트로 잠금.
+
+### Notes
+- deferred(문서화 한계): seal-3(글상자 원점 — 합성 트리거 확보 곤란), eqrt-1(`$…$` 통화 오보호 — LOW·3중 조건부), pline-1(무구분 전폭 병합행 — 관통선 없어 미보호), hwp5-3(리터럴 `<br>` 보존 — builder 방출 규약 신설 필요).
+- 검증: npm test 799 / bench:gate 56/59(reflow 95%) / bench:visual 8케이스(한컴 실렌더).
+
 ## [3.16.0] - 2026-07-05
 
 ### Added

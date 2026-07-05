@@ -165,4 +165,16 @@ describe("도장 배치 엣지 회귀 (seal-1/4/5/8)", () => {
       `colspan 헤더가 col2 오프셋을 밀면 안 됨: merged=${rM.placed[0].posXMm} split=${rS.placed[0].posXMm}`,
     )
   })
+  it("seal-2: 중첩표 앵커는 바깥 셀 좌측 오프셋을 가산한다 (도장이 옆 셀로 안 밀림)", async () => {
+    // 바깥 col1 안 중첩표 vs 바깥 col0 안 중첩표 — col1 쪽이 바깥 col0 폭만큼 오른쪽이어야
+    // (바깥 체인 미가산이면 둘이 같아 도장이 왼쪽 셀로 밀린다 — 한컴 실측으로 확정한 원점 모델).
+    const right = `<table><tr><td>왼쪽 바깥 셀 넓게 채운다</td><td><table><tr><td>서명 (인)</td></tr></table></td></tr></table>`
+    const left = `<table><tr><td><table><tr><td>서명 (인)</td></tr></table></td><td>오른쪽 바깥 셀</td></tr></table>`
+    const rR = await placeSealHwpx(await markdownToHwpx(right), [{ anchor: "(인)", image: PNG_1PX }])
+    const rL = await placeSealHwpx(await markdownToHwpx(left), [{ anchor: "(인)", image: PNG_1PX }])
+    assert.ok(
+      rR.placed[0].posXMm - rL.placed[0].posXMm > 20,
+      `중첩표 바깥 셀 오프셋 미가산: right=${rR.placed[0].posXMm} left=${rL.placed[0].posXMm}`,
+    )
+  })
 })

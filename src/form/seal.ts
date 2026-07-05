@@ -113,25 +113,27 @@ interface ParaSite {
   table?: ScanTable
   /** 중첩표(depth>0) 셀에 속한 문단 — seal-2 근사 한계 경고용 */
   nested?: boolean
+  /** 바깥(조상) 셀 체인 — 중첩표 앵커 가로 원점에 바깥 셀 좌측 오프셋 가산용 (seal-2) */
+  outer?: Array<{ cell: ScanCell; table: ScanTable }>
 }
 
 /** 섹션의 본문+셀+글상자 문단을 문서 순서로 평탄화 (머리말·각주 등 excluded 제외) */
 function collectSites(scan: SectionScan): ParaSite[] {
   const sites: ParaSite[] = []
   for (const p of scan.bodyParagraphs) sites.push({ para: p })
-  const walkTables = (tables: ScanTable[], depth: number): void => {
+  const walkTables = (tables: ScanTable[], depth: number, outer: Array<{ cell: ScanCell; table: ScanTable }>): void => {
     if (depth > 16) return
     for (const t of tables) {
       for (const row of t.rows) {
         for (const cell of row) {
-          for (const p of cell.paragraphs) sites.push({ para: p, cell, table: t, nested: depth > 0 })
-          walkTables(cell.tables, depth + 1)
+          for (const p of cell.paragraphs) sites.push({ para: p, cell, table: t, nested: depth > 0, outer: outer.length ? outer : undefined })
+          walkTables(cell.tables, depth + 1, [...outer, { cell, table: t }])
         }
       }
     }
   }
-  walkTables(scan.tables, 0)
-  walkTables(scan.orphanTables, 0)
+  walkTables(scan.tables, 0, [])
+  walkTables(scan.orphanTables, 0, [])
   sites.sort((a, b) => a.para.start - b.para.start)
   return sites
 }
@@ -429,8 +431,13 @@ export async function placeSealHwpx(hwpxBuffer: ArrayBuffer, ops: SealOp[]): Pro
       mode = availMm - (alignShiftMm + startXMm + anchorWMm) >= sizeMm + 2 ? "right" : "overlap"
     }
 
-    // 셀 앵커: 한컴이 front 부유 가로 오프셋을 단 원점에서 재므로 셀 좌측 오프셋 가산
-    const cellShiftMm = site.cell && site.table ? cellLeftOffsetMm(xml, site.table, site.cell) : 0
+    // 셀 앵커: 한컴이 front 부유 가로 오프셋을 단(컬럼) 원점에서 재므로 셀 좌측 오프셋 가산.
+    // 중첩표는 바깥(조상) 셀 좌측 오프셋도 체인으로 더한다 — 실측 확정: 바깥 셀 미가산 시
+    // 도장이 바깥 열 폭만큼 왼쪽(옆 셀)으로 밀린다 (seal-2, '항상 페이지 단' 모델).
+    const cellShiftMm = site.cell && site.table
+      ? cellLeftOffsetMm(xml, site.table, site.cell) +
+        (site.outer ?? []).reduce((s, o) => s + cellLeftOffsetMm(xml, o.table, o.cell), 0)
+      : 0
     const posXMm =
       (mode === "right" ? startXMm + anchorWMm + 2 : startXMm + anchorWMm / 2 - sizeMm / 2) +
       alignShiftMm + cellShiftMm + (op.dxMm ?? 0)
@@ -461,7 +468,7 @@ export async function placeSealHwpx(hwpxBuffer: ArrayBuffer, ops: SealOp[]): Pro
     const paraSeg = xml.slice(site.para.start, run.insertAt)
     if (/<[A-Za-z0-9]+:tab\b/.test(paraSeg)) warnings.push("탭이 든 문단 — 도장 가로 위치가 근사값입니다 (dx 로 보정)")
     if (/<[A-Za-z0-9]+:(lineBreak|br)\b/.test(paraSeg)) warnings.push("줄바꿈이 든 문단 — 앵커가 2번째 줄 이하면 세로 위치가 어긋날 수 있습니다 (dy 로 보정)")
-    if (site.nested) warnings.push("중첩표(표 안 표) 셀 앵커 — 바깥 셀 오프셋은 근사이며 한컴 실측 전이라 어긋날 수 있습니다 (dx 로 보정)")
+    if (site.nested) warnings.push("중첩표(표 안 표) 셀 앵커 — 바깥 셀 오프셋을 체인으로 가산하나 셀 여백·정렬은 근사입니다 (필요 시 dx 로 보정)")
     if (site.para.inTextbox) warnings.push("글상자 앵커 — 글상자 기하를 반영하지 않아 정렬 보정이 근사입니다 (dx/dy 로 보정)")
 
     placed.push({

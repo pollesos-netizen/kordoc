@@ -460,7 +460,14 @@ export function closeOpenTableEdges(
       // 밴드 y구간을 관통하는 수직선(병합 셀 좌우변·내부 구분선)이 있으면 표 내부 병합 큰
       // 행이므로 분할하지 않는다. 표 사이 프로즈에는 관통 수직선이 없다 — 두 별개 표는 각자
       // 내부에서만 수직선이 끝나므로, 두 표 용접 방지(원 #3)와 양립한다 (pline-1).
-      const bridged = verticals.some(vl => vl.y1 <= yLo + EDGE_NEAR && vl.y2 >= yHi - EDGE_NEAR)
+      // 관통 수직선은 이 표의 가로 범위(밴드를 사이에 둔 괘선들의 x-구간) 안에 있어야
+      // 다리로 인정한다 — 페이지 어디든 있는 무관한 수직선(좌측 여백선·변경바)이 정당한 표
+      // 분할을 죽여 별개 표를 용접하던 것 방지 (pline-2: verticals 전역 스캔 over-reach).
+      const gx1 = Math.min(sorted[i - 1].x1, sorted[i].x1)
+      const gx2 = Math.max(sorted[i - 1].x2, sorted[i].x2)
+      const bridged = verticals.some(vl =>
+        vl.y1 <= yLo + EDGE_NEAR && vl.y2 >= yHi - EDGE_NEAR &&
+        vl.x1 >= gx1 - EDGE_CONNECT_TOL && vl.x1 <= gx2 + EDGE_CONNECT_TOL)
       if (median > 0 && gap > threshold && gap > EDGE_YGAP_ABS_MIN && !bridged
           && cur.length >= EDGE_MIN_RULES && sorted.length - i >= EDGE_MIN_RULES) {
         splitGroups.push(cur)

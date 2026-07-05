@@ -170,6 +170,20 @@ describe("fillWithUniqueGuard — hwpx 경로 & 접두사 오염 (sfill-1/2)", (
     )
     assert.ok(r.filled.some(f => f.key === "주소" && f.value.startsWith("서울")), "주소는 정상 채움")
   })
+  it("sfill-2: 전략0 인셀 패턴도 거부 라벨 접두사 폴백 오염을 차단", async () => {
+    // 인셀 괄호빈칸 '주소(  )지' ×2 + 주소/주소지 키. 주소지 거부 후 전략0(fillInCellPatterns)이
+    // 접두사 '주소'로 폴백해 남의 값을 채우면 안 됨 (전략 1~3만 가드됐던 구멍).
+    const md = "| A | 주소(  )지 |\n|---|---|\n\n| B | 주소(  )지 |\n|---|---|\n"
+    const ab = toAB(await markdownToHwpx(md))
+    const r = await fillWithUniqueGuard(
+      { 주소: "서울시 강남구 A", 주소지: "부산시 해운대 B" },
+      (vals, blocked) => fillHwpx(ab, vals, blocked),
+    )
+    assert.deepEqual(r.rejected, ["주소지"])
+    const reparsed = await parse(Buffer.from(r.buffer))
+    assert.ok(reparsed.success)
+    assert.doesNotMatch(reparsed.markdown, /서울시 강남구 A/, "거부된 주소지 셀에 주소 값 오염 없어야 (전략0)")
+  })
 })
 
 describe("mask_values verify 정규화 (sfill-7)", () => {

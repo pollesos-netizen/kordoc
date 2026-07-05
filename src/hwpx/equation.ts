@@ -278,7 +278,9 @@ function replaceFrac(eqString: string): string {
       // 분자는 over 바로 앞(공백 스킵)의 인접 토큰 — 왼쪽 가장 가까운 } 그룹을 잡아
       // 그 사이 콘텐츠를 무음 삭제하던 것 방지 (sqrt {x} + 1 over 2 에서 " + 1 " 증발)
       let end = cursor
-      while (end > 0 && eqString[end - 1] === " ") end--
+      // 공백류 클래스를 findKeywordToken 경계(/\s/)와 일치시켜 다중줄 스크립트의 분자 무음
+      // 유실 방지 — over 앞뒤가 \n·\t·nbsp 여도 분자 경계를 옳게 잡는다 (eqrt-3/eqrt-2 정합)
+      while (end > 0 && /\s/.test(eqString[end - 1])) end--
       let numStart: number, numEnd: number, wrapped: string
       if (end > 0 && eqString[end - 1] === "}") {
         [numStart, numEnd] = findBrackets(eqString, end - 1, 0)
@@ -286,7 +288,7 @@ function replaceFrac(eqString: string): string {
       } else {
         numEnd = end
         numStart = end
-        while (numStart > 0 && eqString[numStart - 1] !== " ") numStart--
+        while (numStart > 0 && !/\s/.test(eqString[numStart - 1])) numStart--
         if (numStart === numEnd) throw new Error("empty numerator")
         wrapped = "{" + eqString.slice(numStart, numEnd) + "}"
       }

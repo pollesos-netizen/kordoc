@@ -153,4 +153,16 @@ describe("도장 배치 엣지 회귀 (seal-1/4/5/8)", () => {
     const r = await placeSealHwpx(buf, [{ anchor: "(인)", image: PNG_1PX }])
     assert.ok(r.placed[0].warnings?.some(w => /중첩표/.test(w)), `중첩표 경고 기대: ${JSON.stringify(r.placed[0].warnings)}`)
   })
+  it("seal-1: 가로 병합(colspan) 제목행이 아래 데이터행 열 오프셋을 밀지 않는다", async () => {
+    // colspan2 헤더 + 3열 데이터행. col2 앵커 오프셋이 헤더가 3열로 분리된 동일 표와 같아야 —
+    // colspan 병합폭이 한 열에 이중계상되면 도장이 한 열(≈50mm) 오른쪽=표 밖으로 밀린다.
+    const merged = `<table><tr><td colspan="2">제목</td><td>C</td></tr><tr><td>가나다</td><td>라마바</td><td>사아 (인)</td></tr></table>`
+    const split = `<table><tr><td>제</td><td>목</td><td>C</td></tr><tr><td>가나다</td><td>라마바</td><td>사아 (인)</td></tr></table>`
+    const rM = await placeSealHwpx(await markdownToHwpx(merged), [{ anchor: "(인)", image: PNG_1PX }])
+    const rS = await placeSealHwpx(await markdownToHwpx(split), [{ anchor: "(인)", image: PNG_1PX }])
+    assert.ok(
+      Math.abs(rM.placed[0].posXMm - rS.placed[0].posXMm) < 5,
+      `colspan 헤더가 col2 오프셋을 밀면 안 됨: merged=${rM.placed[0].posXMm} split=${rS.placed[0].posXMm}`,
+    )
+  })
 })

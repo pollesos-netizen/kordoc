@@ -132,7 +132,7 @@ export async function fillHwpx(
         for (const cell of row) {
           for (const para of cell.paragraphs) {
             const text = matchText(para)
-            const result = fillInCellPatterns(text, cursor, matchedLabels)
+            const result = fillInCellPatterns(text, cursor, matchedLabels, blockedLabels)
             if (!result) continue
             const l = led(para)
             if (l.fullText !== undefined) continue

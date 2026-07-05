@@ -159,6 +159,18 @@ describe("차트 파서 엣지 회귀 (chart-1/4/5/8)", () => {
     assert.equal(f?.cat.length, 3)
     assert.deepEqual(f?.series[0].values, [1, 2, 0])
   })
+  it("chart-5: 계열이 라벨보다 길면 절단 대신 라벨 확장 — 꼬리 값 보존(무손실)", () => {
+    // 명시 cat 짧음 + 계열 김 → 30 절단 금지, `항목 3` 라벨 확장 (스켑틱 chart-5 회귀)
+    const f = parseChartFence("cat: 상반기, 하반기\n예산: 10, 20, 30")
+    assert.equal(f?.cat.length, 3)
+    assert.equal(f?.cat[2], "항목 3")
+    assert.deepEqual(f?.series[0].values, [10, 20, 30])
+    // cat 없이 후행 계열이 첫 계열보다 김 → 최장 기준 라벨 + 전 계열 보존/0패딩
+    const g = parseChartFence("A: 1, 2\nB: 3, 4, 5")
+    assert.equal(g?.cat.length, 3)
+    assert.deepEqual(g?.series[1].values, [3, 4, 5])
+    assert.deepEqual(g?.series[0].values, [1, 2, 0])
+  })
   it("chart-8: size 0·거대 클램프 (10~500mm)", () => {
     assert.equal(parseChartFence("size: 0x0\n값: 1, 2")?.widthHu, Math.round((10 * 7200) / 25.4))
     assert.equal(parseChartFence("size: 9999x9999\n값: 1, 2")?.widthHu, Math.round((500 * 7200) / 25.4))

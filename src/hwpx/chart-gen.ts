@@ -149,9 +149,12 @@ export function parseChartFence(text: string): ChartFence | null {
 
   if (series.length === 0) return null
   const spec = chartSpec(type)
-  const catFinal = cat ?? series[0].values.map((_, i) => `항목 ${i + 1}`)
   let finalSeries: ChartFence["series"] = spec.pie ? [series[0]] : series
   finalSeries = finalSeries.map(s => ({ ...s }))
+  // cat 라벨 길이 = max(명시 cat, 최장 계열). 계열이 라벨보다 길어도 꼬리 값을
+  // 절단하지 않고 `항목 N`으로 라벨을 확장해 보존한다(무음 데이터 손실 금지 — 리뷰 chart-5).
+  const ptLen = Math.max(cat?.length ?? 0, ...finalSeries.map(s => s.values.length))
+  const catFinal = Array.from({ length: ptLen }, (_, i) => cat?.[i] ?? `항목 ${i + 1}`)
   // cat/values 개수 일치 — strCache/numCache ptCount 불일치(OOXML 계약 위반) 방지.
   // scatter 는 xVal/yVal 독립 축이라 제외.
   if (!spec.scatter) {

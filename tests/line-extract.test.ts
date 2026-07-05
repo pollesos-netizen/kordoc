@@ -69,6 +69,18 @@ describe("closeOpenTableEdges — 상하 스택 표 용접 방지", () => {
     const spanning = synth.filter(s => s.y1 <= 101 && s.y2 >= 239)
     assert.ok(spanning.length >= 1, `병합 행 관통 수직선이 있으면 단일 표(y100~240): ${JSON.stringify(synth)}`)
   })
+
+  it("표 밖 관통 수직선(여백선)은 별개 표 용접의 다리로 인정하지 않는다 (pline-2 국소화)", () => {
+    // 표 A: y660/680/700, 표 B: y560/580/600 (x100~500). 무관한 좌측 여백선 v(40)이 프로즈
+    // 간격(600~660)을 세로로 관통해도 표 x범위 밖이므로 #3 분할을 막지 않아야 한다.
+    const horizontals = [h(560), h(580), h(600), h(660), h(680), h(700)]
+    const verticals = [v(300, 560, 600), v(300, 660, 700), v(40, 540, 720)]
+    const result = closeOpenTableEdges(horizontals, verticals)
+    const synth = result.filter(s => !verticals.includes(s))
+    const welds = synth.filter(s => s.y1 <= 600 && s.y2 >= 660)
+    assert.equal(welds.length, 0, `표 밖 여백선이 별개 표를 용접하면 안 됨: ${JSON.stringify(welds)}`)
+    assert.equal(synth.length, 4, `표별 좌우 테두리 4개 유지: ${JSON.stringify(synth)}`)
+  })
 })
 
 describe("dropShadingStacks — 플러시 테두리 삼킴 방지 (리뷰 #12)", () => {

@@ -31,6 +31,12 @@ describe("수식·왕복 이스케이프 회귀 (eqrt-1~4)", () => {
     assert.match(blocksToMarkdown([P("[별표 1] 담당자 홍** 김** 명단")]), /홍\\\*\\\*/, "별표 헤딩 이스케이프")
     assert.match(blocksToMarkdown([P("(제3조 홍** 관련)")]), /홍\\\*\\\*/, "이탤릭 특례 이스케이프")
   })
+  it("eqrt-2/3: 분자 측 개행/탭도 무음 유실 없이 분자 보존 (공백류 정합)", () => {
+    // eqrt-2 분자 역탐색 공백류를 eqrt-3 경계(/\s/)와 정합 — 다중줄 스크립트에서 분자 유실 방지
+    assert.match(hmlToLatex("{a}\nover\n{b}"), /\\frac\{\s*a\s*\}/, "분자 측 개행에도 {a} 보존")
+    assert.match(hmlToLatex("x\tover y"), /\\frac\{\s*x\s*\}/, "탭 경계 분자 x 보존")
+    assert.equal(hmlToLatex("{a} over {b}"), "\\frac{ a } { b }", "대조군(단일 공백) 무회귀")
+  })
 })
 
 describe("render-worker stdin 견고성 (eqrt-5/6)", () => {

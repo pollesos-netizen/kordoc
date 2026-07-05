@@ -58,7 +58,7 @@ export function fillFormFields(
       for (let c = 0; c < table.cols; c++) {
         const cell = table.cells[r]?.[c]
         if (!cell) continue
-        const result = fillInCellPatterns(cell.text, cursor, matchedLabels)
+        const result = fillInCellPatterns(cell.text, cursor, matchedLabels, blockedLabels)
         if (result) {
           cell.text = result.text
           patternFilledCells.add(cell)

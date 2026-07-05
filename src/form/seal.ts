@@ -226,6 +226,9 @@ function cellLeftOffsetMm(xml: string, table: ScanTable, cell: ScanCell): number
   for (const row of table.rows) {
     for (const c of row) {
       if (c.colAddr === undefined || colW.has(c.colAddr)) continue
+      // colSpan>1 병합 셀은 폭이 여러 열에 걸쳐 있어 한 colAddr 에 귀속되지 않는다 — 단일
+      // 열 셀로만 열폭을 확정해 가로 병합 제목행에서의 이중계상(도장 표 밖)을 막는다 (seal-1 colspan).
+      if (c.colSpan > 1) continue
       const w = cellSzWidthHu(xml, c)
       if (w) colW.set(c.colAddr, w)
     }

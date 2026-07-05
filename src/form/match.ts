@@ -228,6 +228,8 @@ export function fillInCellPatterns(
   cellText: string,
   values: ValueCursor,
   matchedLabels: Set<string>,
+  /** require_unique 2차에서 거부된 라벨 셀 차단 (sfill-2 전략0) — 전략 1~3과 동일 계약 */
+  blockedLabels?: Set<string>,
 ): { text: string; matches: Array<{ key: string; label: string; value: string }> } | null {
   let text = cellText
   const matches: Array<{ key: string; label: string; value: string }> = []
@@ -238,6 +240,8 @@ export function fillInCellPatterns(
     (match, prefix: string, suffix: string) => {
       const label = prefix + suffix  // "일반" + "통" = "일반통"
       const normalizedLabel = normalizeLabel(label)
+      // require_unique 2차: 이 라벨이 거부됐으면 접두사 폴백으로 남의 키에 재배정 금지 (sfill-2 전략0)
+      if (blockedLabels?.has(normalizedLabel)) return match
       // 정확 매칭 → 접두사만 매칭 순
       const matchKey = values.available(normalizedLabel)
         ? normalizedLabel

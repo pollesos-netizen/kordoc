@@ -123,8 +123,10 @@ export function parseChartFence(text: string): ChartFence | null {
     } else if (keyLower === "size") {
       const m = value.match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)$/i)
       if (m) {
-        widthMm = Number(m[1])
-        heightMm = Number(m[2])
+        // 0·거대 치수 클램프 — 크기 0 개체·본문폭 초과 레이아웃 파괴 방지 (10~500mm)
+        const clamp = (n: number): number => Math.min(500, Math.max(10, n))
+        widthMm = clamp(Number(m[1]))
+        heightMm = clamp(Number(m[2]))
       }
     } else if (keyLower === "colors") {
       colors = value.split(",").map(s => s.trim()).filter(Boolean)
@@ -133,9 +135,14 @@ export function parseChartFence(text: string): ChartFence | null {
     } else if (keyLower === "title") {
       // 차트 제목은 본문 텍스트로 쓰는 것을 권장 — 호환 위해 무시(에러 아님)
     } else if (!RESERVED_KEYS.has(keyLower)) {
-      const nums = value.split(",").map(s => Number(s.trim()))
-      if (nums.length > 0 && nums.every(n => Number.isFinite(n))) {
+      // 천단위 콤마(1,000)를 한 숫자로 흡수(자릿수 패턴) 후 구분자 콤마로 분리, 빈 세그먼트 거부(cat 대칭)
+      const segs = value.replace(/(\d),(?=\d{3}(?:\D|$))/g, "$1").split(",").map(s => s.trim()).filter(Boolean)
+      if (segs.length === 0) continue // 값 없는 라인 — Number("")===0 [0] 계열 둔갑 금지
+      const nums = segs.map(Number)
+      if (nums.every(n => Number.isFinite(n))) {
         series.push({ name: key, values: nums })
+      } else {
+        return null // 비숫자 토큰 — 부분 손실(무통보 드랍) 대신 코드블록 폴백(원문 노출로 사용자 인지)
       }
     }
   }
@@ -145,6 +152,11 @@ export function parseChartFence(text: string): ChartFence | null {
   const catFinal = cat ?? series[0].values.map((_, i) => `항목 ${i + 1}`)
   let finalSeries: ChartFence["series"] = spec.pie ? [series[0]] : series
   finalSeries = finalSeries.map(s => ({ ...s }))
+  // cat/values 개수 일치 — strCache/numCache ptCount 불일치(OOXML 계약 위반) 방지.
+  // scatter 는 xVal/yVal 독립 축이라 제외.
+  if (!spec.scatter) {
+    finalSeries = finalSeries.map(s => ({ ...s, values: catFinal.map((_, i) => s.values[i] ?? 0) }))
+  }
   if (spec.pie) {
     const slice = colors ?? pointColors
     if (slice) finalSeries[0].pointColors = slice

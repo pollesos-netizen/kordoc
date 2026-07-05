@@ -7,6 +7,9 @@ import { markdownToHwpx } from "../src/hwpx/generator.js"
 import { parseChartFence, buildChartSpaceXml } from "../src/hwpx/chart-gen.js"
 import { validateHwpx } from "../src/validate.js"
 import { parse } from "../src/index.js"
+import { parseMarkdownToBlocks } from "../src/hwpx/md-runs.js"
+import { precomputeGongmunList } from "../src/hwpx/gen-gongmun-fit.js"
+import { resolveGongmun } from "../src/hwpx/gongmun.js"
 
 const COLUMN_MD = `# 보고
 
@@ -136,5 +139,62 @@ describe("markdownToHwpx 차트 통합", () => {
     assert.equal(v.ok, true)
     const reparsed = await parse(buf)
     assert.equal(reparsed.success, true, "생성 문서 재파싱 성공")
+  })
+})
+
+describe("차트 파서 엣지 회귀 (chart-1/4/5/8)", () => {
+  it("chart-1: 천단위 콤마 흡수 + 빈 세그먼트 거부", () => {
+    assert.deepEqual(parseChartFence("cat: a, b\n예산: 1,000, 2,000")?.series[0].values, [1000, 2000])
+    assert.deepEqual(parseChartFence("cat: a, b\n매출: 10, 20,")?.series[0].values, [10, 20])
+    assert.deepEqual(parseChartFence("합계: 1,234,567")?.series[0].values, [1234567])
+  })
+  it("chart-4: 비숫자 토큰은 코드블록 폴백(null), 빈 값 라인은 계열 아님", () => {
+    assert.equal(parseChartFence("cat: a, b\n예산: 10, 20\n집행률: 50%, 60%"), null)
+    const f = parseChartFence("합계:\n예산: 1, 2")
+    assert.equal(f?.series.length, 1)
+    assert.equal(f?.series[0].name, "예산")
+  })
+  it("chart-5: cat/values 개수 일치 — ptCount 정합(0 패딩)", () => {
+    const f = parseChartFence("cat: a, b, c\nS: 1, 2")
+    assert.equal(f?.cat.length, 3)
+    assert.deepEqual(f?.series[0].values, [1, 2, 0])
+  })
+  it("chart-8: size 0·거대 클램프 (10~500mm)", () => {
+    assert.equal(parseChartFence("size: 0x0\n값: 1, 2")?.widthHu, Math.round((10 * 7200) / 25.4))
+    assert.equal(parseChartFence("size: 9999x9999\n값: 1, 2")?.widthHu, Math.round((500 * 7200) / 25.4))
+  })
+})
+
+describe("차트 마크다운 파싱 회귀 (chart-2/3/6/7)", () => {
+  it("chart-3: CRLF 마크다운에서도 차트 생성 + DSL 원문 미인쇄", async () => {
+    const md = "본문\r\n\r\n```chart\r\ncat: a, b\r\n예산: 10, 20\r\n```\r\n"
+    const buf = await markdownToHwpx(md)
+    const zip = await JSZip.loadAsync(buf)
+    assert.ok(zip.file("Chart/chart1.xml"), "CRLF 에서도 차트 파트 생성")
+    const sec = await zip.file("Contents/section0.xml")!.async("string")
+    assert.doesNotMatch(sec, /cat: a, b/, "DSL 원문이 본문에 인쇄되지 않아야")
+  })
+  it("chart-6: 2칸 들여쓴 펜스(리스트 하위 차트) 인식", async () => {
+    const md = "- 항목\n\n  ```chart\n  cat: a, b\n  예산: 10, 20\n  ```\n"
+    const buf = await markdownToHwpx(md)
+    const zip = await JSZip.loadAsync(buf)
+    assert.ok(zip.file("Chart/chart1.xml"), "2칸 들여쓴 차트 펜스 인식")
+  })
+  it("chart-2: 기안문 항목 사이 차트가 번호 run 을 끊지 않는다", () => {
+    const blocks = parseMarkdownToBlocks("1. 첫째 항목\n\n```chart\ncat: a, b\n예산: 10, 20\n```\n\n2. 둘째 항목")
+    const g = resolveGongmun({ preset: "기안문" })
+    const map = precomputeGongmunList(blocks, g)
+    const markers = blocks.map((b, i) => (b.type === "list_item" ? map.get(i)?.marker : null)).filter((m): m is string => !!m)
+    assert.equal(markers.length, 2, "두 항목 모두 번호 부여(소멸 없음)")
+    assert.ok(markers[0].includes("1"), `첫째 항목 1번 (실제: ${markers[0]})`)
+    assert.ok(markers[1].includes("2"), `둘째 항목 2번 — 리스타트/소멸 아님 (실제: ${markers[1]})`)
+  })
+  it("chart-7: PrvText 에 차트 DSL 원문 대신 [차트]", async () => {
+    const buf = await markdownToHwpx(COLUMN_MD)
+    const zip = await JSZip.loadAsync(buf)
+    const prv = await zip.file("Preview/PrvText.txt")?.async("string")
+    assert.ok(prv)
+    assert.doesNotMatch(prv!, /cat:/, "DSL 원문 미노출")
+    assert.match(prv!, /\[차트\]/, "차트 대체텍스트")
   })
 })

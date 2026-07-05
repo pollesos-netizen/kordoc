@@ -16,7 +16,8 @@ export function buildPrvText(blocks: MdBlock[]): string {
   let bytes = 0
   for (const b of blocks) {
     let text = b.text || (b.rows ? b.rows.map(r => r.join(" ")).join("\n") : "")
-    if (b.type === "html_table") text = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+    if (b.type === "code_block" && (b.lang || "").toLowerCase() === "chart") text = "[차트]" // DSL 원문 노출 방지
+    else if (b.type === "html_table") text = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
     if (!text) continue
     lines.push(text)
     bytes += text.length * 3
@@ -52,7 +53,9 @@ function findMathDelim(s: string, from: number): number {
 }
 
 export function parseMarkdownToBlocks(md: string): MdBlock[] {
-  const lines = md.split("\n")
+  // CRLF/CR(Windows·구 Mac 작성 .md) → LF 정규화 — \r 잔류 시 fence/heading/list 정규식이
+  // 줄 끝에서 매치 실패해 전멸한다 (chart-3: ```chart 원문이 본문으로 인쇄되는 광역 결함)
+  const lines = md.replace(/\r\n?/g, "\n").split("\n")
   const blocks: MdBlock[] = []
   let i = 0
 
@@ -108,13 +111,14 @@ export function parseMarkdownToBlocks(md: string): MdBlock[] {
     }
 
     // 코드블록
-    const fenceMatch = line.match(/^(`{3,}|~{3,})(.*)$/)
+    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
     if (fenceMatch) {
       const fence = fenceMatch[1]
       const lang = fenceMatch[2].trim()
       const codeLines: string[] = []
       i++
-      while (i < lines.length && !lines[i].startsWith(fence)) {
+      // 여는·닫는 펜스 모두 ≤3칸 들여쓰기 허용 (CommonMark — 리스트 하위 차트 관행)
+      while (i < lines.length && !lines[i].replace(/^ {0,3}/, "").startsWith(fence)) {
         codeLines.push(lines[i])
         i++
       }

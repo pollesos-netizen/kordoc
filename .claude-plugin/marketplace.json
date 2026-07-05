@@ -1,0 +1,26 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "kordoc",
+  "description": "Single-plugin marketplace shipping kordoc — Korean official-document toolkit (.hwp/.hwpx/.hml + PDF/DOCX/XLS/XLSX) for Claude.",
+  "owner": {
+    "name": "chrisryugj",
+    "email": "ryuseungin@naver.com"
+  },
+  "plugins": [
+    {
+      "name": "kordoc",
+      "description": "Parse, generate, fill, patch, compare, validate, and render Korean official documents (HWP 3.x/5.x, HWPX, HWPML, PDF, DOCX, XLS/XLSX) in Claude — 공문서 프리셋 생성(기안문·보고서·계획서·통지·회의록), 서식 보존 빈칸 채우기, 라운드트립 패치, 조판 SVG 렌더. Powered by the kordoc npm CLI/MCP — no Hancom Office required.",
+      "author": {
+        "name": "chrisryugj"
+      },
+      "category": "documents",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/chrisryugj/kordoc.git",
+        "path": "plugins/kordoc",
+        "ref": "main"
+      },
+      "homepage": "https://github.com/chrisryugj/kordoc"
+    }
+  ]
+}

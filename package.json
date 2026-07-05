@@ -67,13 +67,9 @@
     "zod": "^3.23.0"
   },
   "peerDependencies": {
-    "pdfjs-dist": ">=4.0.0",
     "puppeteer-core": ">=22.0.0"
   },
   "peerDependenciesMeta": {
-    "pdfjs-dist": {
-      "optional": true
-    },
     "puppeteer-core": {
       "optional": true
     }
@@ -82,6 +78,7 @@
     "@huggingface/transformers": "^4.1.0",
     "@hyzyla/pdfium": "^2.1.0",
     "onnxruntime-node": "^1.24.0",
+    "pdfjs-dist": "^4.10.38",
     "sharp": "^0.34.0"
   },
   "devDependencies": {

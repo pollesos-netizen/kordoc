@@ -119,7 +119,15 @@ program
   .option("-p, --pages <range>", "페이지/섹션 범위")
   .option("--format <type>", "출력 형식: markdown 또는 json", "markdown")
   .option("--silent", "진행 메시지 숨기기")
-  .action(async (dir: string, opts) => {
+  .action(async (dir: string, opts, command: Command) => {
+    // 루트 커맨드의 동명 옵션(-d/--out-dir·-p/--pages·--format·--silent)이 서브커맨드 뒤에서도 루트로 흡수되는 commander 동작 보완
+    const rootOpts = program.opts()
+    opts.outDir ??= rootOpts.outDir
+    opts.pages ??= rootOpts.pages
+    opts.silent ??= rootOpts.silent
+    if (command.getOptionValueSource("format") === "default" && program.getOptionValueSource("format") === "cli") {
+      opts.format = rootOpts.format
+    }
     const { watchDirectory } = await import("./watch.js")
     await watchDirectory({
       dir,
@@ -140,8 +148,15 @@ program
   .option("--format <type>", "출력 포맷: hwpx-preserve (기본, 원본 스타일 보존), hwpx, markdown", "hwpx-preserve")
   .option("--dry-run", "채우지 않고 서식 필드 목록만 출력")
   .option("--silent", "진행 메시지 숨기기")
-  .action(async (template: string, opts) => {
+  .action(async (template: string, opts, command: Command) => {
     try {
+      // 루트 커맨드의 동명 옵션(-o/--output·--format·--silent)이 서브커맨드 뒤에서도 루트로 흡수되는 commander 동작 보완
+      const rootOpts = program.opts()
+      opts.output ??= rootOpts.output
+      opts.silent ??= rootOpts.silent
+      if (command.getOptionValueSource("format") === "default" && program.getOptionValueSource("format") === "cli") {
+        opts.format = rootOpts.format
+      }
       const absPath = resolve(template)
       const fileSize = statSync(absPath).size
       if (fileSize > 500 * 1024 * 1024) {

@@ -72,16 +72,19 @@ npx -y kordoc@^3 generate 보고서.md -o 보고서.hwpx --preset 보고서
 
   ~~~
   ```chart
-  type: column          ← column|bar|line|area|pie|doughnut|scatter|radar (+_stacked)
+  type: column
   cat: 1분기, 2분기, 3분기
-  size: 120x70          ← mm (선택)
-  colors: #304D68, accent2   ← 계열 색(파이는 조각 색, 선택)
-  예산: 100, 120, 110   ← "이름: 숫자들" 라인 = 데이터 계열
+  size: 120x70
+  colors: #304D68, accent2
+  예산: 100, 120, 110
   집행: 80, 95, 105
   ```
   ~~~
 
-  차트 제목은 펜스가 아니라 본문 문단으로 쓴다. 계열이 없으면 일반 코드블록으로 폴백된다.
+  - `type`: `column|bar|line|area|pie|doughnut|scatter|radar` (+`_stacked`) — 미지정 시 column.
+  - `cat`: 카테고리(x축) 라벨 · `size: 너비x높이`(mm, 선택) · `colors`: 계열 색(파이는 조각 색, 선택).
+  - `이름: 숫자들` 형식의 각 라인이 데이터 계열. 위 펜스는 그대로 복사해도 되는 유효 입력이다(주석 금지 — 주석 텍스트가 값으로 들어가 계열이 탈락한다).
+  - 차트 제목은 펜스가 아니라 본문 문단으로 쓴다. 계열이 없으면 일반 코드블록으로 폴백된다.
 - 생성 후 `validate` 로 구조를 확인하고 나서 사용자에게 전달한다.
 
 ### 3) 서식 채우기 (fill)

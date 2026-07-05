@@ -283,6 +283,64 @@ program
   })
 
 program
+  .command("seal <file>")
+  .description('도장/서명 이미지를 앵커 문구 위에 부유 배치 (표/페이지 불확장) — kordoc seal 신청서.hwpx --image 도장.png --anchor "(인)" -o 결과.hwpx')
+  .requiredOption("--image <path>", "도장/서명 이미지 (투명 배경 PNG 권장)")
+  .option("--anchor <text>", "앵커 문구", "(인)")
+  .option("-n, --occurrence <num>", "같은 앵커가 여럿일 때 0-based 선택", "0")
+  .option("--size-mm <num>", "도장 한 변 크기 mm (기본: 줄높이×1.6, 7~18 클램프)")
+  .option("--mode <mode>", "overlap(문구 위 겹침) | right(오른쪽 옆) | auto", "auto")
+  .option("--dx <mm>", "x 미세조정 mm", "0")
+  .option("--dy <mm>", "y 미세조정 mm", "0")
+  .option("-o, --output <path>", "출력 경로 (기본: <입력>.sealed.hwpx)")
+  .option("--silent", "진행 메시지 숨기기")
+  .action(async (file: string, opts) => {
+    try {
+      const { placeSealHwpx, detectFormat } = await import("./index.js")
+      const rootOpts = program.opts()
+      const output: string | undefined = opts.output ?? rootOpts.output
+      const silent: boolean = opts.silent ?? rootOpts.silent
+      const mode = String(opts.mode).toLowerCase()
+      if (!["overlap", "right", "auto"].includes(mode)) {
+        process.stderr.write(`[kordoc] --mode 는 overlap/right/auto 중 하나여야 합니다\n`)
+        process.exit(1)
+      }
+      const buf = new Uint8Array(readFileSync(resolve(file)))
+      if (detectFormat(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer) !== "hwpx") {
+        process.stderr.write(`[kordoc] seal 은 HWPX 전용입니다 (HWP 5.x 바이너리는 미지원)\n`)
+        process.exit(1)
+      }
+      const image = new Uint8Array(readFileSync(resolve(opts.image)))
+      const ext = extname(opts.image).slice(1).toLowerCase() || "png"
+      const result = await placeSealHwpx(
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
+        [{
+          anchor: opts.anchor,
+          occurrence: Number(opts.occurrence) || 0,
+          image,
+          ext: ext as "png" | "jpg" | "jpeg" | "bmp" | "gif",
+          sizeMm: opts.sizeMm != null ? Number(opts.sizeMm) : undefined,
+          mode: mode as "overlap" | "right" | "auto",
+          dxMm: Number(opts.dx) || 0,
+          dyMm: Number(opts.dy) || 0,
+        }],
+      )
+      const outPath = resolve(output ?? file.replace(/\.hwpx$/i, "") + ".sealed.hwpx")
+      mkdirSync(dirname(outPath), { recursive: true })
+      writeFileSync(outPath, Buffer.from(result.buffer))
+      if (!silent) {
+        for (const p of result.placed) {
+          process.stderr.write(`[kordoc] 도장 배치: "${p.anchor}" #${p.occurrence} → ${p.mode} (${p.posXMm}mm, ${p.posYMm}mm, ${p.sizeMm}mm) [${p.entry}]\n`)
+        }
+        process.stderr.write(`[kordoc] → ${outPath}\n`)
+      }
+    } catch (err) {
+      process.stderr.write(`[kordoc] 오류: ${sanitizeError(err)}\n`)
+      process.exit(1)
+    }
+  })
+
+program
   .command("patch <original> <edited>")
   .description("서식 보존 라운드트립 패치 — 편집된 마크다운을 원본 HWPX/HWP에 in-place 반영 (kordoc patch 원본.hwpx 편집.md -o 출력.hwpx)")
   .option("-o, --output <path>", "출력 경로 (기본: <원본>.patched.hwpx|.hwp)")

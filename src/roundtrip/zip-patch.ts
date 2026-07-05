@@ -141,13 +141,24 @@ function crc32(data: Uint8Array): number {
  *
  * @param original 원본 ZIP 바이트
  * @param replacements 엔트리 이름 → 새 압축 전 데이터
+ * @param additions 신규 엔트리 이름 → 데이터 (기존 로컬 레코드 뒤·CD 앞에 추가 —
+ *   도장 이미지 등 BinData 파트 추가용. 기존 엔트리와 이름 충돌 시 에러)
  */
-export function patchZipEntries(original: Uint8Array, replacements: Map<string, Uint8Array>): Uint8Array {
+export function patchZipEntries(
+  original: Uint8Array,
+  replacements: Map<string, Uint8Array>,
+  additions?: Map<string, Uint8Array>,
+): Uint8Array {
   const { entries, cdOffset, eocdOffset } = parseCentralDirectory(original)
   const view = new DataView(original.buffer, original.byteOffset, original.byteLength)
 
   for (const name of replacements.keys()) {
     if (!entries.some(e => e.name === name)) throw new KordocError(`ZIP에 없는 엔트리: ${name}`)
+  }
+  if (additions) {
+    for (const name of additions.keys()) {
+      if (entries.some(e => e.name === name)) throw new KordocError(`ZIP에 이미 있는 엔트리: ${name}`)
+    }
   }
 
   // 로컬 레코드 순서 = 원본 로컬 오프셋 순서 (mimetype 첫 엔트리 보존)
@@ -194,6 +205,44 @@ export function patchZipEntries(original: Uint8Array, replacements: Map<string, 
     newMeta.set(e, { crc, compSize: compData.length, uncompSize: newData.length, flags })
   }
 
+  // 신규 엔트리 — 기존 로컬 레코드 뒤에 UTF-8 이름·고정 타임스탬프로 기록.
+  // PNG 등 기압축 데이터는 deflate가 오히려 커질 수 있어 작아질 때만 압축(STORE 폴백).
+  const added: Array<{
+    nameBytes: Uint8Array
+    crc: number
+    compSize: number
+    uncompSize: number
+    method: number
+    localOffset: number
+  }> = []
+  if (additions) {
+    const encoder = new TextEncoder()
+    for (const [name, data] of additions) {
+      const nameBytes = encoder.encode(name)
+      const deflated = new Uint8Array(deflateRawSync(data))
+      const method = deflated.length < data.length ? 8 : 0
+      const compData = method === 8 ? deflated : data
+      const crc = crc32(data)
+      const header = new Uint8Array(30 + nameBytes.length)
+      const hv = new DataView(header.buffer)
+      hv.setUint32(0, LOCAL_SIG, true)
+      hv.setUint16(4, 20, true) // version needed
+      hv.setUint16(6, 0x0800, true) // UTF-8 이름 플래그
+      hv.setUint16(8, method, true)
+      hv.setUint16(10, 0, true) // time
+      hv.setUint16(12, 0x21, true) // date 1980-01-01 (결정적 출력)
+      hv.setUint32(14, crc, true)
+      hv.setUint32(18, compData.length, true)
+      hv.setUint32(22, data.length, true)
+      hv.setUint16(26, nameBytes.length, true)
+      hv.setUint16(28, 0, true)
+      header.set(nameBytes, 30)
+      added.push({ nameBytes, crc, compSize: compData.length, uncompSize: data.length, method, localOffset: offset })
+      segments.push(header, compData)
+      offset += header.length + compData.length
+    }
+  }
+
   // Central Directory — 원본 CD 엔트리 순서 유지, 오프셋/메타 패치
   const newCdOffset = offset
   for (const e of entries) {
@@ -210,11 +259,36 @@ export function patchZipEntries(original: Uint8Array, replacements: Map<string, 
     segments.push(cd)
     offset += cd.length
   }
+
+  // 신규 엔트리 CD 레코드 (원본 CD 뒤)
+  for (const a of added) {
+    const cd = new Uint8Array(46 + a.nameBytes.length)
+    const cv = new DataView(cd.buffer)
+    cv.setUint32(0, CD_SIG, true)
+    cv.setUint16(4, 20, true) // version made by
+    cv.setUint16(6, 20, true) // version needed
+    cv.setUint16(8, 0x0800, true) // UTF-8 이름 플래그
+    cv.setUint16(10, a.method, true)
+    cv.setUint16(12, 0, true) // time
+    cv.setUint16(14, 0x21, true) // date 1980-01-01
+    cv.setUint32(16, a.crc, true)
+    cv.setUint32(20, a.compSize, true)
+    cv.setUint32(24, a.uncompSize, true)
+    cv.setUint16(28, a.nameBytes.length, true)
+    cv.setUint32(42, a.localOffset, true)
+    cd.set(a.nameBytes, 46)
+    segments.push(cd)
+    offset += cd.length
+  }
   const newCdSize = offset - newCdOffset
 
-  // EOCD — 원본 복사 후 CD 오프셋/크기 패치
+  // EOCD — 원본 복사 후 CD 오프셋/크기 패치 (신규 엔트리만큼 카운트 증가)
   const eocd = copyBytes(original, eocdOffset)
   const eview = new DataView(eocd.buffer, eocd.byteOffset, eocd.byteLength)
+  if (added.length > 0) {
+    eview.setUint16(8, view.getUint16(eocdOffset + 8, true) + added.length, true)
+    eview.setUint16(10, view.getUint16(eocdOffset + 10, true) + added.length, true)
+  }
   eview.setUint32(12, newCdSize, true)
   eview.setUint32(16, newCdOffset, true)
   segments.push(eocd)

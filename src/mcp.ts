@@ -559,6 +559,57 @@ server.tool(
   }
 )
 
+// ─── 도구: place_seal ─────────────────────────────
+
+server.tool(
+  "place_seal",
+  "도장/서명 이미지를 앵커 문구(\"(인)\"·\"서명 또는 인\" 등) 위에 부유(글 앞) 배치합니다. 표/페이지를 키우지 않습니다 (HWPX 전용).",
+  {
+    file_path: z.string().min(1).describe("대상 HWPX 문서의 절대 경로"),
+    image_path: z.string().min(1).describe("도장/서명 이미지 절대 경로 (투명 배경 PNG 권장)"),
+    anchor: z.string().default("(인)").describe("앵커 문구 — 이 문구 기준으로 배치"),
+    occurrence: z.number().int().min(0).default(0).describe("같은 앵커가 여럿일 때 0-based 선택"),
+    size_mm: z.number().positive().optional().describe("도장 한 변 크기 mm (기본: 줄높이×1.6, 7~18 클램프)"),
+    mode: z.enum(["overlap", "right", "auto"]).default("auto").describe("overlap=문구 위 겹침, right=문구 오른쪽 옆, auto=공간 있으면 right"),
+    dx_mm: z.number().optional().describe("x 미세조정 mm"),
+    dy_mm: z.number().optional().describe("y 미세조정 mm"),
+    output_path: z.string().min(1).describe("출력 HWPX 저장 경로"),
+  },
+  async ({ file_path, image_path, anchor, occurrence, size_mm, mode, dx_mm, dy_mm, output_path }) => {
+    try {
+      const { buffer } = readValidatedFile(file_path)
+      const format = detectFormat(buffer)
+      if (format !== "hwpx") {
+        return {
+          content: [{ type: "text", text: `place_seal 은 HWPX 파일만 지원합니다 (감지된 포맷: ${format}).` }],
+          isError: true,
+        }
+      }
+      const image = new Uint8Array(readFileSync(resolve(image_path)))
+      const ext = (extname(image_path).slice(1).toLowerCase() || "png") as "png" | "jpg" | "jpeg" | "bmp" | "gif"
+      const { placeSealHwpx } = await import("./form/seal.js")
+      const result = await placeSealHwpx(buffer, [{
+        anchor, occurrence, image, ext,
+        sizeMm: size_mm, mode, dxMm: dx_mm, dyMm: dy_mm,
+      }])
+      mkdirSync(dirname(resolve(output_path)), { recursive: true })
+      writeFileSync(resolve(output_path), Buffer.from(result.buffer))
+      const p0 = result.placed[0]
+      return {
+        content: [{
+          type: "text",
+          text: `도장 배치 완료: "${p0.anchor}" #${p0.occurrence} → ${p0.mode} (x ${p0.posXMm}mm, y ${p0.posYMm}mm, ${p0.sizeMm}mm각, ${p0.entry})\n저장: ${resolve(output_path)}\n표/페이지 불확장(글 앞 부유) — 한컴에서 위치 확인 후 dx_mm/dy_mm 로 미세조정 가능합니다.`,
+        }],
+      }
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `도장 배치 실패: ${sanitizeError(err)}` }],
+        isError: true,
+      }
+    }
+  },
+)
+
 // ─── 도구: patch_document ────────────────────────────
 
 server.tool(

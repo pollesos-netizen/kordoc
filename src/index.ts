@@ -21,7 +21,7 @@ import type { ParseResult, ParseOptions } from "./types.js"
 import { classifyError, toArrayBuffer } from "./utils.js"
 import { fillFormFields } from "./form/filler.js"
 import type { FillResult } from "./form/filler.js"
-import type { FillValue } from "./form/match.js"
+import type { FillValue, FillInput } from "./form/match.js"
 import { fillHwpx } from "./form/filler-hwpx.js"
 import type { HwpxFillResult } from "./form/filler-hwpx.js"
 import { blocksToMarkdown } from "./table/builder.js"
@@ -249,7 +249,7 @@ export interface FillFormOutput {
  */
 export async function fillForm(
   input: string | ArrayBuffer | Buffer,
-  values: Record<string, FillValue>,
+  values: Record<string, FillInput>,
   outputFormat: FillOutputFormat = "markdown",
 ): Promise<FillFormOutput> {
   // 입력 버퍼 준비
@@ -306,8 +306,8 @@ export { compare, diffBlocks } from "./diff/compare.js"
 export { extractFormFields, isLabelCell, extractFormSchema, inferFieldType } from "./form/recognize.js"
 export type { FormFieldType, FormFieldSchema, FormSchemaResult } from "./form/recognize.js"
 export { fillFormFields } from "./form/filler.js"
-export { ValueCursor } from "./form/match.js"
-export type { FillValue } from "./form/match.js"
+export { ValueCursor, formatFillValue, fillWithUniqueGuard } from "./form/match.js"
+export type { FillValue, FillInput } from "./form/match.js"
 export type { FillResult } from "./form/filler.js"
 export { fillHwpx } from "./form/filler-hwpx.js"
 export type { HwpxFillResult } from "./form/filler-hwpx.js"

@@ -361,6 +361,8 @@ export interface FormField {
   row: number
   /** 0-based 소스 열 */
   col: number
+  /** 매칭된 입력 키(정규화) — 모호 라벨 거부 가드(fillWithUniqueGuard)의 집계 기준 */
+  key?: string
 }
 
 export interface FormResult {

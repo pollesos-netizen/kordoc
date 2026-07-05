@@ -6,6 +6,7 @@ import { z } from "zod"
 import { readFileSync, writeFileSync, realpathSync, openSync, readSync, closeSync, statSync, mkdirSync } from "fs"
 import { resolve, isAbsolute, extname, dirname } from "path"
 import { parse, detectFormat, detectZipFormat, blocksToMarkdown, compare, extractFormFields, fillFormFields, markdownToHwpx, fillHwpx, patchHwpx, patchHwp } from "./index.js"
+import { fillWithUniqueGuard, type FillInput } from "./form/match.js"
 import type { GongmunOptions } from "./index.js"
 import { VERSION, toArrayBuffer, sanitizeError, KordocError } from "./utils.js"
 import { extractHwp5MetadataOnly } from "./hwp5/parser.js"
@@ -415,6 +416,16 @@ server.tool(
   }
 )
 
+/** fields + formats 를 FillInput 맵으로 결합 (formats의 라벨은 fields와 동일 표기 기준) */
+function buildFillInputs(fields: Record<string, string>, formats?: Record<string, string>): Record<string, FillInput> {
+  const out: Record<string, FillInput> = {}
+  for (const [k, v] of Object.entries(fields)) {
+    const format = formats?.[k]
+    out[k] = format ? { value: v, format } : v
+  }
+  return out
+}
+
 // ─── 도구: fill_form ───────────────────────────────
 
 server.tool(
@@ -423,10 +434,13 @@ server.tool(
   {
     file_path: z.string().min(1).describe("서식 템플릿 문서의 절대 경로 (HWP, HWPX, PDF, XLSX, DOCX)"),
     fields: z.record(z.string(), z.string()).describe("채울 필드 맵 (라벨 → 값). 예: {\"성명\": \"홍길동\", \"전화번호\": \"010-1234-5678\"}"),
+    formats: z.record(z.string(), z.string()).optional().describe("필드별 값 서식 (라벨 → 포맷). 정준값 하나로 서식마다 다른 모양을 채울 때: date:yy.mm.dd / phone:hyphen·dot·digits / rrn:hyphen·masked / mask:###-## / 자유 패턴(yyyy년 m월 d일, ###-####-####)"),
+    require_unique: z.boolean().optional().describe("한 키가 서식의 2곳 이상에 매칭되면 채우지 않고 거부 — 반복 라벨 양식에서 남의 블록 오염 방지 (배열 값은 예외)"),
+    mask_values: z.boolean().optional().describe("응답에 값 대신 글자수만 표시 — 개인정보 채움 시 값이 대화 로그에 남지 않게"),
     output_format: z.enum(["markdown", "hwpx", "hwpx-preserve"]).default("hwpx-preserve").describe("출력 포맷: hwpx-preserve (원본 스타일 보존, HWPX 전용), hwpx (새 HWPX 생성), markdown"),
     output_path: z.string().optional().describe("출력 파일 저장 경로 (선택). 지정 시 파일로 저장, 미지정 시 텍스트로 반환"),
   },
-  async ({ file_path, fields, output_format, output_path }) => {
+  async ({ file_path, fields, formats, require_unique, mask_values, output_format, output_path }) => {
     try {
       const { buffer } = readValidatedFile(file_path)
 
@@ -445,13 +459,28 @@ server.tool(
           }
         }
 
-        const hwpxResult = await fillHwpx(buffer, fields)
+        const inputs = buildFillInputs(fields, formats)
+        const hwpxResult = require_unique
+          ? await fillWithUniqueGuard(inputs, vals => fillHwpx(buffer, vals))
+          : { ...(await fillHwpx(buffer, inputs)), rejected: [] as string[] }
+        // 마스킹 verify — 채운 결과를 재파싱해 값이 실제 문서에 있는지만 확인 (값 미노출)
+        let verifyLine: string | null = null
+        if (mask_values && hwpxResult.filled.length > 0) {
+          const reparsed = await parse(Buffer.from(hwpxResult.buffer))
+          const okCount = reparsed.success
+            ? hwpxResult.filled.filter(f => reparsed.markdown.includes(f.value)).length
+            : 0
+          verifyLine = `검증(마스킹): ${okCount}/${hwpxResult.filled.length} FILLED — 재파싱 대조, 값 미노출`
+        }
         const summary = [
           `채워진 필드: ${hwpxResult.filled.length}개 (원본 스타일 보존)`,
+          hwpxResult.rejected.length > 0 ? `모호 라벨 거부(2곳+ 매칭): ${hwpxResult.rejected.join(", ")}` : null,
           hwpxResult.unmatched.length > 0 ? `매칭 실패: ${hwpxResult.unmatched.join(", ")}` : null,
+          verifyLine,
         ].filter(Boolean).join(" | ")
 
-        const filledList = hwpxResult.filled.map(f => `  - ${f.label}: ${f.value}`).join("\n")
+        const filledList = hwpxResult.filled
+          .map(f => `  - ${f.label}: ${mask_values ? `[${[...f.value].length}자]` : f.value}`).join("\n")
 
         if (output_path) {
           mkdirSync(dirname(resolve(output_path)), { recursive: true })
@@ -476,7 +505,10 @@ server.tool(
       }
 
       const formInfo = extractFormFields(result.blocks)
-      const fillResult = fillFormFields(result.blocks, fields)
+      const irInputs = buildFillInputs(fields, formats)
+      const fillResult = require_unique
+        ? await fillWithUniqueGuard(irInputs, vals => fillFormFields(result.blocks, vals))
+        : { ...fillFormFields(result.blocks, irInputs), rejected: [] as string[] }
 
       if (fillResult.filled.length === 0 && formInfo.fields.length === 0) {
         return {
@@ -488,6 +520,7 @@ server.tool(
       const markdown = blocksToMarkdown(fillResult.blocks)
       const summary = [
         `채워진 필드: ${fillResult.filled.length}개`,
+        fillResult.rejected.length > 0 ? `모호 라벨 거부(2곳+ 매칭): ${fillResult.rejected.join(", ")}` : null,
         fillResult.unmatched.length > 0 ? `매칭 실패: ${fillResult.unmatched.join(", ")}` : null,
         formInfo.fields.length > 0 ? `서식 필드: ${formInfo.fields.length}개 (확신도 ${(formInfo.confidence * 100).toFixed(0)}%)` : null,
       ].filter(Boolean).join(" | ")

@@ -2,7 +2,7 @@
 
 import type { IRBlock, IRCell, IRTable, FormField } from "../types.js"
 import { isLabelCell } from "./recognize.js"
-import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion, ValueCursor, type FillValue } from "./match.js"
+import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion, ValueCursor, type FillInput } from "./match.js"
 
 /** 필드 채우기 결과 */
 export interface FillResult {
@@ -36,7 +36,7 @@ export interface FillResult {
  */
 export function fillFormFields(
   blocks: IRBlock[],
-  values: Record<string, FillValue>,
+  values: Record<string, FillInput>,
 ): FillResult {
   // deep clone — 원본 불변
   const cloned = structuredClone(blocks)
@@ -61,7 +61,7 @@ export function fillFormFields(
           cell.text = result.text
           patternFilledCells.add(cell)
           for (const m of result.matches) {
-            filled.push({ label: m.label, value: m.value, row: r, col: c })
+            filled.push({ label: m.label, value: m.value, row: r, col: c, key: m.key })
           }
         }
       }
@@ -172,6 +172,7 @@ function fillTable(
         value: newValue,
         row: r,
         col: c,
+        key: matchKey,
       })
     }
   }
@@ -208,6 +209,7 @@ function fillTable(
           value: newValue,
           row: r,
           col: c,
+          key: matchKey,
         })
       }
     }
@@ -233,7 +235,7 @@ function fillInlineFields(
     const newValue = values.consume(matchKey)
     if (newValue === undefined) continue // 배열 값 소진
     matchedLabels.add(matchKey)
-    filled.push({ label: seg.label.trim(), value: newValue, row: -1, col: -1 })
+    filled.push({ label: seg.label.trim(), value: newValue, row: -1, col: -1, key: matchKey })
     out += text.slice(pos, seg.valueStart)
     // 빈 자리 삽입은 콜론·다음 라벨과 붙지 않게 공백 부착
     out += seg.valueStart === seg.valueEnd

@@ -9,6 +9,89 @@ import { LABEL_KEYWORDS } from "./recognize.js"
 export type FillValue = string | string[]
 
 /**
+ * 채울 값 입력 — 값만 주거나, 서식 변환(format)을 함께 지정한다.
+ * 프로필엔 정준값 하나(생년월일 "19900315"), 서식마다 모양이 다를 때
+ * format이 도구 안에서 변환한다 (claw-hwp secure-fill 포맷엔진 이식).
+ */
+export type FillInput = FillValue | { value: FillValue; format?: string }
+
+// ─── 값 서식 변환 (claw-hwp secure-fill formatValue 이식) ─────────────
+
+function parseYMD(v: string): { y: string; yy: string; m: string; d: string } | null {
+  const d = v.replace(/\D/g, "")
+  let y: string, m: string, day: string
+  if (d.length >= 8) { y = d.slice(0, 4); m = d.slice(4, 6); day = d.slice(6, 8) }
+  else if (d.length === 6) { const yy = +d.slice(0, 2); y = String(yy <= 29 ? 2000 + yy : 1900 + yy); m = d.slice(2, 4); day = d.slice(4, 6) }
+  else return null
+  return { y, yy: y.slice(2), m, d: day }
+}
+
+function fmtDate(v: string, style: string): string {
+  const p = parseYMD(v)
+  if (!p) return v
+  // 토큰 치환, 긴 것 우선: yyyy/yy/mm/dd → 단독 m/d(선행 0 제거)
+  return (style || "yyyy-mm-dd")
+    .replace(/yyyy/g, p.y).replace(/yy/g, p.yy)
+    .replace(/mm/g, p.m).replace(/dd/g, p.d)
+    .replace(/m/g, String(+p.m)).replace(/d/g, String(+p.d))
+}
+
+/** 숫자 마스크 — `#` 하나가 값의 다음 숫자 하나를 소비, 리터럴은 통과 */
+function maskDigits(v: string, pattern: string): string {
+  const ds = v.replace(/\D/g, "")
+  let i = 0
+  return pattern.replace(/#/g, () => ds[i++] ?? "")
+}
+
+function fmtPhone(v: string, style: string): string {
+  const d = v.replace(/\D/g, "")
+  if (d.length < 9) return v
+  const a = d.slice(0, 3), b = d.slice(3, -4), c = d.slice(-4)
+  switch (style) {
+    case "digits": return d
+    case "dot": return `${a}.${b}.${c}`
+    case "space": return `${a} ${b} ${c}`
+    case "intl": return `+82-${d.slice(1, 3)}-${b}-${c}`
+    case "intl-paren": return `82)${d.slice(1, 3)}-${b}-${c}`
+    default: return `${a}-${b}-${c}` // hyphen
+  }
+}
+
+function fmtRRN(v: string, style: string): string {
+  const d = v.replace(/\D/g, "")
+  if (d.length !== 13) return v
+  switch (style) {
+    case "digits": return d
+    case "front": return d.slice(0, 6)
+    case "masked": return `${d.slice(0, 6)}-${d[6]}******`
+    default: return `${d.slice(0, 6)}-${d.slice(6)}` // hyphen
+  }
+}
+
+/**
+ * 값 서식 변환 — `종류:스타일` 접두형(date:/phone:/rrn:/mask:/digits/upper/lower/nospace)
+ * 또는 접두 없는 자유 패턴(`#` 포함 → 숫자마스크, yyyy·yy·mm·dd 포함 → 날짜 토큰).
+ * 모르는 포맷은 값 원형 반환 (fail-open — 채움 자체는 진행).
+ */
+export function formatFillValue(value: string, format?: string): string {
+  if (!format) return value
+  const ci = format.indexOf(":")
+  const kind = ci >= 0 ? format.slice(0, ci) : format
+  const style = ci >= 0 ? format.slice(ci + 1) : ""
+  if (kind === "date") return fmtDate(value, style)
+  if (kind === "phone") return fmtPhone(value, style)
+  if (kind === "rrn") return fmtRRN(value, style)
+  if (kind === "mask") return maskDigits(value, style)
+  if (kind === "digits") return value.replace(/\D/g, "")
+  if (kind === "upper") return value.toUpperCase()
+  if (kind === "lower") return value.toLowerCase()
+  if (kind === "nospace") return value.replace(/\s+/g, "")
+  if (format.includes("#")) return maskDigits(value, format)
+  if (/(yyyy|yy|mm|dd)/.test(format)) return fmtDate(value, format)
+  return value
+}
+
+/**
  * 다중값 커서 — 라벨별 값 소비 상태를 추적한다.
  * 스칼라 값은 무한 반복(기존 동작), 배열 값은 적용 순서대로 소진되며
  * 다 쓰면 available=false가 되어 이후 등장은 채우지 않는다.
@@ -251,20 +334,56 @@ export function padInsertion(text: string, pos: number, value: string): string {
   return lead + value + trail
 }
 
-/** 입력 values 맵을 정규화된 키로 변환 */
-export function normalizeValues(values: Record<string, FillValue>): Map<string, FillValue> {
+/** 입력 values 맵을 정규화된 키로 변환 — format 지정(FillInput 객체형)은 여기서 값으로 변환 */
+export function normalizeValues(values: Record<string, FillInput>): Map<string, FillValue> {
   const map = new Map<string, FillValue>()
-  for (const [label, value] of Object.entries(values)) {
-    map.set(normalizeLabel(label), value)
+  for (const [label, raw] of Object.entries(values)) {
+    const { value, format } = typeof raw === "object" && !Array.isArray(raw)
+      ? raw
+      : { value: raw, format: undefined }
+    map.set(normalizeLabel(label), Array.isArray(value)
+      ? value.map(v => formatFillValue(v, format))
+      : formatFillValue(value, format))
   }
   return map
+}
+
+/**
+ * 모호 라벨 거부 가드 — 한 입력 키(스칼라)가 서식의 2곳 이상에 채워지면 남의 블록
+ * 오염 위험(대표자 행에 참여인력 값이 들어가는 류)이므로, 그 키는 채우지 않고
+ * rejected로 보고한 뒤 나머지 키만으로 다시 채운다 (claw-hwp require_occurrence 이식).
+ * 배열 값은 다중 등장 소진이 의도된 동작이라 거부 대상이 아니다.
+ * @param run 같은 원본에 대해 결정적으로 재실행 가능한 채우기 함수
+ */
+export async function fillWithUniqueGuard<R extends { filled: Array<{ key?: string }> }>(
+  values: Record<string, FillInput>,
+  run: (vals: Record<string, FillInput>) => R | Promise<R>,
+): Promise<R & { rejected: string[] }> {
+  const first = await run(values)
+  const counts = new Map<string, number>()
+  for (const f of first.filled) {
+    if (f.key) counts.set(f.key, (counts.get(f.key) ?? 0) + 1)
+  }
+  const isArrayValue = (normKey: string): boolean => {
+    for (const [label, raw] of Object.entries(values)) {
+      if (normalizeLabel(label) !== normKey) continue
+      return Array.isArray(typeof raw === "object" && !Array.isArray(raw) ? raw.value : raw)
+    }
+    return false
+  }
+  const dup = new Set([...counts].filter(([k, n]) => n >= 2 && !isArrayValue(k)).map(([k]) => k))
+  if (dup.size === 0) return { ...first, rejected: [] }
+  const filtered = Object.fromEntries(Object.entries(values).filter(([label]) => !dup.has(normalizeLabel(label))))
+  const second = await run(filtered)
+  const rejected = Object.keys(values).filter(label => dup.has(normalizeLabel(label)))
+  return { ...second, rejected }
 }
 
 /** 매칭 안 된 라벨을 원본 키로 복원 */
 export function resolveUnmatched(
   normalizedValues: Map<string, FillValue>,
   matchedLabels: Set<string>,
-  originalValues: Record<string, FillValue>,
+  originalValues: Record<string, FillInput>,
 ): string[] {
   return [...normalizedValues.keys()]
     .filter(k => !matchedLabels.has(k))

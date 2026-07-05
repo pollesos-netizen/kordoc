@@ -24,7 +24,7 @@
 import JSZip from "jszip"
 import { isLabelCell } from "./recognize.js"
 import { KordocError } from "../utils.js"
-import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion, ValueCursor, type FillValue } from "./match.js"
+import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion, ValueCursor, type FillValue , type FillInput } from "./match.js"
 import type { FormField } from "../types.js"
 import {
   scanSectionXml, buildParagraphSplices, buildRangeSplices, applySplices, paraTText, paraTextPureT,
@@ -66,7 +66,7 @@ interface ParaEditLedger {
  */
 export async function fillHwpx(
   hwpxBuffer: ArrayBuffer,
-  values: Record<string, FillValue>,
+  values: Record<string, FillInput>,
 ): Promise<HwpxFillResult> {
   const u8 = new Uint8Array(hwpxBuffer)
   const zip = await JSZip.loadAsync(hwpxBuffer)
@@ -252,6 +252,7 @@ export async function fillHwpx(
                 value: newValue,
                 row: rowIdx,
                 col: colIdx,
+                key: matchKey,
               })
             }
           }

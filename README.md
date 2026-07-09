@@ -83,6 +83,10 @@ MCP 등록 대신 스킬(SKILL.md) 형태로 쓰려면:
 
 ---
 
+## v3.18.0 변경사항
+
+- **🎨 서식 프로필**: 표의 위상뿐 아니라 **테두리·음영·열 실측폭·셀 글꼴까지** 원본 문서 없이 재현합니다. `hwpxToProfile(hwpx)`로 레퍼런스 서식만 JSON으로 추출하고, `markdownToHwpx(md, { profile })`로 다른 문서에 그 서식을 입힙니다 — 원본 유출 없이 기관 서식만 공유·재현(이슈 #41, 스키마 [`docs/format-profile-spec.md`](docs/format-profile-spec.md)). 스키마·예시 기여: [@chiclooc-rgb](https://github.com/chiclooc-rgb) (PR #42).
+
 ## v3.17.0 변경사항
 
 - **🖼️ 레이아웃 렌더 충실도**: 글꼴이 문서 지정대로 나오는 per-run 폰트(고딕 제목이 바탕체로 나오던 것 해소), 표지+본문 다구역 문서 전체 렌더, 가로(landscape) 문서 프레임 회전(우측 잘림 해소), 연속 표 문단의 페이지 포개짐 분리.

@@ -69,6 +69,10 @@ Beyond plain text extraction, kordoc automates the **entire lifecycle of Korean 
 
 ---
 
+## What's New in v3.18.0
+
+- **🎨 Format profiles**: reproduce a table's **borders, shading, measured column widths, and cell fonts** — not just its merge topology — without shipping the source document. Extract style-only JSON from a reference hwpx with `hwpxToProfile(hwpx)`, then apply it to another document via `markdownToHwpx(md, { profile })` — share and reproduce an organization's formatting without leaking its content (issue #41, schema [`docs/format-profile-spec.md`](docs/format-profile-spec.md)). Schema & samples contributed by [@chiclooc-rgb](https://github.com/chiclooc-rgb) (PR #42).
+
 ## What's New in v3.17.0
 
 - **🖼️ Render fidelity**: per-run fonts (gothic titles no longer fall back to the serif root font), full multi-section rendering (cover + body documents render every section), landscape page rotation (wide tables no longer clipped at the right edge), and page splitting for back-to-back full-page table paragraphs (trailing pages no longer pile onto one page).

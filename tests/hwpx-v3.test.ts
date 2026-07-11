@@ -143,18 +143,62 @@ describe("hwpx v3 — 하이퍼링크 URL (fieldBegin HYPERLINK)", () => {
 })
 
 describe("hwpx v3 — 표 캡션", () => {
+  const capRows =
+    `<hp:tr>${tc(para("머리1"), 0, 0)}${tc(para("머리2"), 1, 0)}</hp:tr>` +
+    `<hp:tr>${tc(para("값1"), 0, 1)}${tc(para("값2"), 1, 1)}</hp:tr>`
+  const wrapTbl = (caption: string, capBottom = false) =>
+    `<hp:p id="0"><hp:run><hp:tbl rowCnt="2" colCnt="2">` +
+    (capBottom ? capRows + caption : caption + capRows) +
+    `</hp:tbl></hp:run></hp:p>`
+
   it("hp:caption > subList > p 텍스트가 IRTable.caption으로 보존된다", async () => {
-    const tbl = `<hp:tbl rowCnt="2" colCnt="2">` +
-      `<hp:caption side="TOP"><hp:subList>${para("표 1. 테스트 캡션")}</hp:subList></hp:caption>` +
-      `<hp:tr>${tc(para("머리1"), 0, 0)}${tc(para("머리2"), 1, 0)}</hp:tr>` +
-      `<hp:tr>${tc(para("값1"), 0, 1)}${tc(para("값2"), 1, 1)}</hp:tr>` +
-      `</hp:tbl>`
-    const body = `<hp:p id="0"><hp:run>${tbl}</hp:run></hp:p>`
-    const result = await parseHwpxDocument(await makeHwpx(sec(body)))
+    const caption = `<hp:caption side="TOP"><hp:subList>${para("표 1. 테스트 캡션")}</hp:subList></hp:caption>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(wrapTbl(caption))))
 
     const tableBlock = result.blocks.find(b => b.type === "table")
     assert.equal(tableBlock?.table?.caption, "표 1. 테스트 캡션")
     assert.ok(result.markdown.includes("표 1. 테스트 캡션"), `캡션 출력: ${result.markdown}`)
+  })
+
+  it("side=BOTTOM 캡션(표 뒤 위치)도 IRTable.caption으로 보존된다 (#46)", async () => {
+    const caption = `<hp:caption side="BOTTOM" fullSz="0" width="8504" gap="850" lastWidth="45315">` +
+      `<hp:subList>${para("주1) 표 아래 캡션 텍스트")}</hp:subList></hp:caption>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(wrapTbl(caption, true))))
+
+    const tableBlock = result.blocks.find(b => b.type === "table")
+    assert.equal(tableBlock?.table?.caption, "주1) 표 아래 캡션 텍스트")
+    assert.ok(result.markdown.includes("주1) 표 아래 캡션 텍스트"), `캡션 출력: ${result.markdown}`)
+  })
+
+  it("캡션 내 다중 <hp:p>의 순서와 줄바꿈이 보존된다", async () => {
+    const caption = `<hp:caption side="BOTTOM"><hp:subList>` +
+      `${para("주1) 첫째 줄")}${para("주2) 둘째 줄")}` +
+      `</hp:subList></hp:caption>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(wrapTbl(caption, true))))
+
+    const tableBlock = result.blocks.find(b => b.type === "table")
+    assert.equal(tableBlock?.table?.caption, "주1) 첫째 줄\n주2) 둘째 줄", "다중 문단은 순서대로 줄바꿈 결합")
+  })
+
+  it("캡션 내 스타일이 다른 다중 <hp:run>의 텍스트 순서가 보존된다", async () => {
+    const caption = `<hp:caption side="TOP"><hp:subList>` +
+      `<hp:p id="0" paraPrIDRef="0">` +
+      `<hp:run charPrIDRef="0"><hp:t>표 1. </hp:t></hp:run>` +
+      `<hp:run charPrIDRef="1"><hp:t>강조 제목</hp:t></hp:run>` +
+      `</hp:p></hp:subList></hp:caption>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(wrapTbl(caption))))
+
+    const tableBlock = result.blocks.find(b => b.type === "table")
+    assert.equal(tableBlock?.table?.caption, "표 1. 강조 제목", "다중 run 텍스트는 순서대로 연결")
+  })
+
+  it("활성 표 컨텍스트 밖의 캡션은 무음 드롭 없이 문단으로 보존된다 (#46 방어)", async () => {
+    // 캡션이 <tbl> 자식이 아닌 섹션 직계로 존재하는 비정상 파일 — 텍스트가 통째 사라지면 안 됨
+    const body = `<hp:p id="0"><hp:run>${para("본문")}</hp:run></hp:p>` +
+      `<hp:caption side="BOTTOM"><hp:subList>${para("고아 캡션 텍스트")}</hp:subList></hp:caption>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(body)))
+
+    assert.ok(result.markdown.includes("고아 캡션 텍스트"), `고아 캡션 보존: ${result.markdown}`)
   })
 })
 

@@ -102,12 +102,18 @@ function walkSection(
       }
 
       // 표/도표 캡션 — IRTable.caption으로 보존 (v3.0, 기존 무음 드롭 수정)
-      case "caption":
-        if (tableCtx) {
-          const capText = collectSubListText(el, ctx)
-          if (capText) tableCtx.caption = (tableCtx.caption ? tableCtx.caption + "\n" : "") + capText
+      case "caption": {
+        const capText = collectSubListText(el, ctx)
+        if (capText) {
+          if (tableCtx) {
+            tableCtx.caption = (tableCtx.caption ? tableCtx.caption + "\n" : "") + capText
+          } else {
+            // 활성 표 컨텍스트 밖의 캡션 — 무음 드롭 대신 문단으로 보존 (#46)
+            blocks.push({ type: "paragraph", text: capText, pageNumber: ctx.sectionNum })
+          }
         }
         break
+      }
 
       case "tr":
         if (tableCtx) {

@@ -456,9 +456,10 @@ export const AUTONUM_PREFIX_RE =
   /^(?:[0-9０-９a-zA-Z가-힣]{1,6}[.)\]:]|[([][0-9０-９a-zA-Z가-힣]{1,6}[)\]][.:]?|[ⅰ-ⅹⅠ-Ⅹ①-⑮][.)\]:]?)$/u
 
 /** HTML 셀 inner → 평문 라인 — <br> 분리, <img>/중첩표 토큰 제외 */
-export function htmlCellInnerToLines(inner: string): { lines: string[]; hadNonText: boolean } {
+export function htmlCellInnerToLines(inner: string): { lines: string[]; hadNonText: boolean; imgSrcs: string[] } {
   let hadNonText = false
   let work = inner
+  const imgSrcs: string[] = []
   if (/<table[\s>]/i.test(work)) {
     hadNonText = true
     // 중첩 표 통째 제거 (짝 맞는 닫힘까지)
@@ -466,10 +467,17 @@ export function htmlCellInnerToLines(inner: string): { lines: string[]; hadNonTe
   }
   if (/<img\s/i.test(work)) {
     hadNonText = true
-    work = work.replace(/<img\s(?:"[^"]*"|'[^']*'|[^>"'])*?>/gi, "")
+    // src는 걷어 반환 — 생성기가 placeholder <hp:pic>로 이미지 존재를 보존 (v4.0.5).
+    // 종전 무흔적 제거는 이미지 열이 빈 열이 되어 재파싱 후행 열 트림을 유발했다
+    work = work.replace(/<img\s(?:"[^"]*"|'[^']*'|[^>"'])*?>/gi, (tag) => {
+      const m = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag)
+      const src = m?.[1] ?? m?.[2]
+      if (src) imgSrcs.push(src)
+      return ""
+    })
   }
   const lines = work.split(/<br\s*\/?>/gi).map(s => s.trim()).filter(s => s.length > 0)
-  return { lines, hadNonText }
+  return { lines, hadNonText, imgSrcs }
 }
 
 /** 셀 inner의 최상위 <table>...</table> 부분문자열들 (문서 순서, 짝 맞는 닫힘까지) */

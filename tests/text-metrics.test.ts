@@ -10,6 +10,7 @@ import {
   measureTextWidth,
   simulateWrap,
   fitRatioForFewerLines,
+  faceClassOf,
   SPACE_EM_FIXED,
 } from "../src/hwpx/text-metrics.js"
 import { markerWidth, levelIndent } from "../src/hwpx/gongmun.js"
@@ -80,6 +81,26 @@ describe("fitRatioForFewerLines — 자동 장평(orphan 축소)", () => {
   })
   it("이미 한 줄이면 null", () => {
     assert.equal(fitRatioForFewerLines("가나다", 10000, 10000, 1000, 100, 90), null)
+  })
+})
+
+describe("faceClass — 고정폭 글꼴 폭 테이블 (v4.0.6 회귀)", () => {
+  it("굴림체·돋움체·바탕체·궁서체만 fixedPitch, 그 외·미지정은 hcr", () => {
+    for (const f of ["굴림체", "돋움체", "바탕체", "궁서체"]) assert.equal(faceClassOf(f), "fixedPitch")
+    for (const f of ["함초롬바탕", "굴림", "HY견고딕", "맑은 고딕", "", undefined, null]) {
+      assert.equal(faceClassOf(f), "hcr")
+    }
+  })
+  it("fixedPitch: 한글 1.0em·ASCII 0.5em (함초롬 0.97em·비례폭과 구분)", () => {
+    assert.equal(measureTextWidth("가나다라", 1000, 100, { faceClass: "fixedPitch" }), 4000)
+    assert.equal(measureTextWidth("가나다라", 1000, 100), 3880)
+    assert.equal(measureTextWidth("W", 1000, 100, { faceClass: "fixedPitch" }), 500)
+  })
+  it("simulateWrap: 함초롬 폭으론 들어가는 줄이 고정폭에선 wrap (줄당 과대적재 회귀)", () => {
+    // 한글 10자, 폭 9800: hcr 9700 ≤ 9800 → 1줄 / fixedPitch 10000 > 9800 → 2줄
+    const text = "가나다라마바사아자차"
+    assert.equal(simulateWrap(text, 9800, 9800, 1000, 100, "charAll").lines, 1)
+    assert.equal(simulateWrap(text, 9800, 9800, 1000, 100, "charAll", { faceClass: "fixedPitch" }).lines, 2)
   })
 })
 

@@ -1,6 +1,6 @@
 /** 2-pass colSpan/rowSpan 테이블 빌더 및 Markdown 변환 */
 
-import type { CellContext, IRBlock, IRCell, IRTable } from "../types.js"
+import type { CellContext, IRBlock, IRCell, IRSpan, IRTable } from "../types.js"
 import { sanitizeHref } from "../utils.js"
 import { mapPuaText } from "../shared/pua.js"
 
@@ -313,6 +313,30 @@ export function dedupeRunningHeaders(blocks: IRBlock[]): IRBlock[] {
   return result
 }
 
+/**
+ * 왕복 채널 run-span → 강조 마커 재방출. 마커는 텍스트에 밀착해야 유효하므로
+ * span 가장자리 공백은 마커 밖으로 옮긴다. 코드 span 내부는 이스케이프 없이 원문.
+ */
+function spansToMarkdown(spans: IRSpan[]): string {
+  let out = ""
+  for (const s of spans) {
+    if (!s.text) continue
+    const marker = s.code ? "`" : s.bold && s.italic ? "***" : s.bold ? "**" : s.italic ? "*" : ""
+    if (!marker) {
+      out += escapeGfm(s.text)
+      continue
+    }
+    const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(s.text)!
+    const core = m[2]
+    if (!core) {
+      out += s.text
+      continue
+    }
+    out += m[1] + marker + (s.code ? core : escapeGfm(core)) + marker + m[3]
+  }
+  return out
+}
+
 export function blocksToMarkdown(blocks: IRBlock[]): string {
   const lines: string[] = []
 
@@ -377,6 +401,19 @@ export function blocksToMarkdown(blocks: IRBlock[]): string {
         continue
       }
 
+      // 인라인 강조 run-span (왕복 채널 — kordoc 생성 파일 한정 복원) → 마커 재방출.
+      // 마커 자체는 이스케이프 대상이 아니므로 span 내부 텍스트만 escapeGfm 후 감싼다
+      if (block.spans?.length) {
+        let rendered = spansToMarkdown(block.spans)
+        if (block.href) {
+          const href = sanitizeHref(block.href)
+          if (href) rendered = `[${rendered}](${href})`
+        }
+        if (block.footnoteText) rendered += ` (주: ${block.footnoteText})`
+        lines.push(block.quote ? "> " + rendered : rendered, "")
+        continue
+      }
+
       // 하이퍼링크가 있으면 텍스트에 링크 삽입 (javascript: 등 위험 스킴 제거)
       if (block.href) {
         const href = sanitizeHref(block.href)
@@ -388,7 +425,7 @@ export function blocksToMarkdown(blocks: IRBlock[]): string {
         text += ` (주: ${block.footnoteText})`
       }
 
-      lines.push(escapeGfm(text), "")
+      lines.push(block.quote ? "> " + escapeGfm(text) : escapeGfm(text), "")
     } else if (block.type === "table" && block.table) {
       // 테이블 앞에 빈 줄 보장 (마크다운 렌더링 필수)
       if (lines.length > 0 && lines[lines.length - 1] !== "") {
@@ -544,7 +581,16 @@ function tableToMarkdown(table: IRTable): string {
       if (skip.has(`${r},${c}`)) continue
       const cell = cells[r]?.[c]
       if (!cell) continue
-      display[r][c] = escapeGfm(sanitizeText(cell.text)).replace(/\|/g, "\\|").replace(/\n/g, "<br>")
+      // 왕복 채널 셀 spans (v4.0.4) — 강조 마커 재방출 (문단별, 개행은 <br> 규약)
+      display[r][c] = (cell.blocks?.some(b => b.spans)
+        ? cell.blocks
+          .map(b => b.type === "image" && b.text
+            ? `![image](${b.text})`
+            : b.spans ? spansToMarkdown(b.spans) : escapeGfm(sanitizeText(b.text ?? "")))
+          .filter(Boolean)
+          .join("<br>")
+        : escapeGfm(sanitizeText(cell.text)).replace(/\n/g, "<br>")
+      ).replace(/\|/g, "\\|")
 
       // colSpan/rowSpan: 병합된 열은 빈 칸으로 유지 (텍스트 중복 방지)
       for (let dr = 0; dr < cell.rowSpan; dr++) {

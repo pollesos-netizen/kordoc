@@ -5,6 +5,212 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.4] - 2026-07-12
+
+v4.0.3 이후 미발행 작업 3회분을 단일 릴리스로 통합(npm 연속 버전 유지) —
+① 프로덕션 하드닝(44개 부채 인벤토리), ② 잔여 부채 마감(T1~T5),
+③ 잔여 타겟 최대목표 소진(R1~R4). 게이트: 테스트 1,012 / bench:gate 전 체인 /
+시각 오라클 14종 해밍0.
+
+### ③ 잔여 타겟 소진 — R1~R4 (2026-07-12)
+
+#### Added
+
+- **reflow Phase 3 — 개체 세로 흐름 모델** (R2): float(treatAsChar=0,
+  TOP_AND_BOTTOM, PARA 앵커) 개체는 텍스트를 `vertOffset+outTop+개체높이+outBottom`
+  아래로 밀고(두문 결재표 실측 140+16653+852=17645 정확 일치), PAGE/PAPER 앵커·
+  BEHIND/IN_FRONT_OF_TEXT는 본문 흐름 불참(페이지 하단 직인이 커서를 밀던 것 제거),
+  inline(treatAsChar=1) 표는 실효높이+줄 leading 전진. 빈 문단(개체 전용 포함)은
+  run charPrIDRef로 pitch 산출(종전 DEFAULT_CHAR 1000 → 본문 1300 실측 정합).
+  **혼합 캐시 문서 지원**: 한컴 저장본을 프로그램 편집해 일부 문단만 캐시가 없는
+  파일도 reflow 옵션이면 진입 — 캐시 문단의 한컴 좌표(vertpos+textheight+spacing)로
+  커서를 이어받아 캐시 없는 문단이 흐름 위치에 붙는다(종전 페이지 상단 0에 겹침).
+  reflow 자기일관성 **58/59 → 59/59**(36264961 전 문단 d=0), 게이트 플로어 95→**100%**.
+- **서식 프로필 스키마 0.3.0** (R1): ①`fontName_hangul` 폰트명 왕복 — 추출이
+  fontfaces에서 이름을 함께 담고, 생성이 header fontface에 append+리맵(HANGUL·LATIN
+  id 3+/실측 프리셋 8+)해 원본 글꼴 목록 없이 글꼴 재현. 순번 폴딩(PROFILE_FONT_MAX)은
+  이름 없는 구버전 프로필의 dangling 방지로만 잔존. ②`anchor_row` 첫 행 전체
+  지문(셀 경계 '|' 보존, 셀별 24자 정규화) — (0,0) 빈 셀 크로스탭의 동형 쌍둥이 표를
+  순번 폴백 대신 지문으로 매칭. ③행0이 전부 병합인 표의 col_widths 소실 수정 —
+  어느 행이든 span-1 셀로 확정 + 잔여 열은 병합 폭 균등 분배. ④profile-io zod 강화 —
+  border type(HWPX LineType2 열거)·width("N.NN mm")·color(#RRGGBB|none) 손편집 오타를
+  한컴 로드 전 거부.
+- **공문서 옵션 표면 SSOT** (R3, 인벤토리 영역1-1): `gongmun-surface.ts` —
+  CLI(cli.ts)·MCP(mcp.ts)가 각자 복붙하던 GongmunOptions 조립을 buildGongmunOptions
+  하나로, 값 집합(열거·중첩 키 목록·수치 범위)을 상수로 통일해 zod shape를 파생.
+  리팩터 전후 CLI 산출물 **10케이스 바이트 동일**(ZIP 엔트리 해시) 검증. MCP preset
+  enum을 PRESET_ALIAS 파생으로 바꿔 누락 별칭 6종(시행문·공문·공문서·계획·알림·안내)
+  회복.
+- **IRBlock.indent 관찰 슬롯** (R4): 파서가 paraPr `<hh:margin>` 자식요소형
+  hc:left(+양수 hc:intent)를 읽어 문단 들여쓰기(HWPUNIT)를 IR에 노출 — gongmun
+  리스트 depth 재유도·양식 분석 원료. 마크다운 방출은 불변(점수 무영향).
+- **셀 인라인 강조 왕복** (R4): run-span 채널(v4.0.6 최상위 한정)을 GFM 셀 문단으로
+  확장 — 파서가 셀 블록에 span을 달고(table-build가 span 문단 blocks 운반),
+  GFM 방출이 `**`·`*`·`` ` `` 마커를 재방출, generateRuns가 되읽는다.
+- **시각 오라클 14종**: `heading-levels` 신규 — default(비공문서) 모드 h1~h4
+  OUTLINE 방출의 한컴 실렌더 확증. 개요번호("1.", "1.1.") 미강제 실측(미정의
+  numbering idRef=0 참조) — gongmun과 달리 명명 스타일 이전 불필요 판정.
+- computeColWidths 불변식 property test — 결정적 LCG 500케이스에서
+  합=totalWidth·전 열 양의 정수 잠금.
+
+#### Fixed
+
+- **원문자 폴백 파서 정합** (R4): 생성기 circledNumber 51+·circledHangul 15+가
+  순환(mod)하던 것을 파서 자동번호 폴백(para-heading)과 같은 규칙(괄호수·가나다
+  서수)으로 — 왕복 시 형제 순번 재유도 모호성 제거.
+- **docFoot 구분선 컬럼폭 적응** (R4): '─'×46 고정이 좁은 커스텀 여백에서 두 줄로
+  꺾이던 것을 컬럼폭 비례로(기본 여백 175mm에서 46자 불변 — 기존 산출물 무변경).
+- **HTML 중첩표 높이 재사용** (R4): 호스트 셀 높이 추정이 행수×cellH 근사라 중첩
+  셀이 접히면(긴 텍스트 wrap) 과소하던 것을 재귀가 확정한 hp:sz 실높이로.
+
+#### 정책 결정
+
+- **joinSoftBreaks 보류**: md-runs의 "라인=문단"이 계약 — 공문서는 짧은 개조식
+  라인이 지배적이라 소프트랩 조인이 오히려 위험, 3표면 옵션 신설 비용 대비 수요
+  없음. 필요 시 재론.
+
+### ② 잔여 부채 마감 — T1~T5 (PDF 표 구조·reflow 폰트·인라인 강조 왕복·표면 파리티·수식)
+
+#### Added
+
+- **인라인 강조 run-span 왕복 채널** (T3): 생성 content.hpf에 `generator`/`kordoc-layout`
+  opf 메타를 심고, 파서가 자사 생성 default 레이아웃 파일에서 볼드·이탤릭·인라인 코드
+  run과 인용 문단(paraPr 6)을 마크다운 마커(`**` `*` `` ` `` `> `)로 복원 — IR에
+  optional `spans`(IRSpan[])·`quote` 추가, blocksToMarkdown이 재방출. 외래 문서는 메타
+  부재로 채널이 꺼져 오검출 없음(회귀테스트). fixture basic fwd 0.525→**1.0** ·
+  law 0.943→1.0 · corpus fwd/bwd micro 0.9998→**1.0**. 시각 13종 해밍0(메타 무해 실측).
+- **서식 프로필 표면 노출** (#41, T4): `kordoc profile <ref.hwpx> -o prof.json` 서브커맨드
+  + `generate --profile` 플래그 + MCP `extract_profile` 도구·`generate_document`
+  `profile_path` 파라미터 — 라이브러리 전용이던 간판 기능을 3경로 파리티로. FormatProfile
+  zod 경계 검증 1벌 공유(profile-io.ts) — 손편집 오타 JSON을 위치·사유와 함께 거부.
+- **프리셋 비호환 옵션 경고** (T4): `incompatibleGongmunWarnings` — docHead/docFoot(비
+  기안문)·noticeHead(비통지)·press(비보도자료)·표지목차(보도자료)·sizes(비실측 프리셋)·
+  suppressSingle(비standard 번호 체계)의 조용한 폐기를 CLI stderr·MCP 응답 경고로 노출.
+- **reflow 고정폭 글꼴 폭 테이블** (T2): `faceClass`('hcr'|'fixedPitch') — 굴림체·돋움체·
+  바탕체·궁서체 문단을 한글 1.0em/ASCII 0.5em으로 측정(종전 함초롬 0.97em 근사가 줄당
+  1~2자 과대적재로 wrap 어긋남). head-styles가 charPr fontRef→글꼴명 해석, reflow가 지배
+  charPr 힌트 전달 — 힌트 없으면 현행 테이블(생성 경로 불변). 자기일관성 55/59→**58/59**
+  (게이트 플로어 90→95% 상향). 잔여 1건 = 대형 표 페이지 분할(Phase 3) known limitation.
+- **PDF 적층 표 분리** (T1): 경계 수평선 하나를 공유한 별개 표 두 개(채용공고 머리
+  스트립+응시원서 본표)를 Union-Find가 프랑켄 그리드로 묶던 것을 컷 라인 판정(전폭
+  수평선 + 관통 논리 수직선 0 + 양쪽 독립 수직선 + 내부 x-집합 비겹침)으로 절단.
+  관통 판정은 체인 뷰(맞닿은 세그먼트=논리 수직선) — 외곽선을 섹션별 세그먼트로 그린
+  단일 표(nrich 지원서)는 절단하지 않음. 분리 밴드는 vertex를 자기 선으로 재계산(공유
+  경계선 위 교차점이 반대편 표의 수직선 x를 나르던 열 오염 제거). cellExact
+  0.6977→**0.7279** · NED 0.5237→0.5308. 잔여 비-exact는 GT 표현 차(투명 테두리 행·
+  중첩 평탄화·유령 좁은 열)로 재확인 — bench/pdf-table-gt.mjs 11차 헤더 기록.
+- **수식 COMMAND_MAP 역인덱스 충전** (T5): 읽기맵(CONVERT_MAP) 단일 명령 ~60개(\div
+  \approx \therefore \because \oplus \uparrow \propto \cong \equiv \sim \angle \mapsto
+  \ll \gg \dagger \models 등)를 자동 역매핑 — '맨 알파벳' 누출 0(전수 회귀 잠금). 미지원
+  명령은 리터럴 따옴표 보호(가시화·\text 되읽기 안정), EqEdit 함수 키워드(sin·cos·log 등
+  27개)는 identity 통과. `cases`/`vmatrix` 환경 EqEdit 네이티브 토큰 고정점 +
+  `Bmatrix`/`align` 계열 렌더·내용 보존.
+
+#### Fixed
+
+- **CLI parseKv**: 값의 '=' 보존(첫 '='만 분리), '=' 없는 조각(쉼표로 잘린 값 꼬리)
+  무증상 드랍 → stderr 경고 — `--doc-head "title=상반기 계획, 주요사업"`의 값 유실이
+  조용히 지나가던 것 봉합.
+- **MCP generate_document 드리프트**: `line_spacing` 파라미터·`sizes.bodyTitle` 키가
+  CLI에만 있고 MCP에 없던 것 봉합.
+- **MCP detect_format**: 16바이트 헤더 판정이 XLSX/DOCX를 'hwpx'로 오보 — 내부 구조
+  세분화로 parse_metadata와 판정 일치.
+- **CLI seal 숫자 플래그**: `--occurrence -1` 통과·`--dx/--dy` 비숫자 NaN→0 무증상
+  강제를 엄격 검증으로 (MCP zod 동등).
+- **hwpx styles bold/italic**: charPr 자식 요소(`<hh:bold/>`)도 감지 — 실측 한컴 HWPX는
+  요소만 쓰는데 속성형(bold="1")만 읽던 것 (구버전 HWPML 잔재는 계속 인정).
+
+#### 벤치 (전 게이트 PASS + 시각 13/13 해밍0, 테스트 978→994)
+
+| 지표 | 전 | 후 |
+|---|---|---|
+| roundtrip fwd / bwd (corpus micro) | 0.999816 / 0.999908 | **1 / 1** |
+| roundtrip fixture basic fwd | 0.525 | **1** |
+| pdf-table cellExact / contentNED | 0.697712 / 0.523722 | **0.727941** / 0.530784 |
+| reflow 자기일관성 | 55/59 (93%) | **58/59 (98%)** |
+
+무후퇴 플로어 상향: roundtrip fwd 0.999→0.9995 · bwd 0.998→0.9995 · tableExact
+0.72→0.85, pdf-table cellExact 0.69→0.72 · NED 0.52→0.525, reflow 90%→95%.
+
+### ① 프로덕션 하드닝 (구조부채·correctness·왕복 충실도·파서 정밀도)
+
+44개 잔여 기술부채 인벤토리(6영역 병렬 발굴) 기반 하드닝. P0 구조부채 3건은
+리팩터 전후 산출물 SHA-256 대조(14조합 매트릭스)로 바이트 무변경 검증.
+
+#### Added
+
+- **id 파티션 불변식** (P0-1): charPr/paraPr/borderFill 방출 직전 "중복·구멍 없는
+  연속 id" 런타임 검증 — 카운트 상수 드리프트가 무음 폰트오염 대신 즉시 에러.
+  `GJ_CHAR_COUNT`·`charVariantBase`·`staticBfEnd` 수기 산술을 명명 상수·실방출
+  목록 파생으로 교체. 회귀: 12조합 id 연속·itemCnt·dangling 0 테스트.
+- **geometry.ts SSOT** (P0-3): A4 크기·mm→HWPUNIT·본문폭(계산 48189 vs 실측
+  48180 구분 보존)·표 id 네임스페이스(1000/9.1M/9.2M/9.3M/9.4M) 중앙화.
+- **두 자리 부호 내어쓰기 변형 paraPr** (P1-1): '10.'·'10)'·'(10)' 항목에
+  (depth, 부호폭) 전용 paraPr(id 34~)를 문서별 발급 — 둘째 줄이 내용 첫 글자에
+  정렬 (종전 ~0.55타 왼쪽 어긋남). 두 자리 항목 없으면 미발급(기존 산출물 불변).
+- **왕복 채널** (P2): 장식표 제목 셀 `name="__kordoc_h1~6"` 마커 — 개조식
+  표지·장헤더·1페이지형 제목박스가 재파싱 시 heading으로 복원, 목차·제목반복
+  파생물은 스킵(중복 제거). 리터럴 부호 문단('가.'·'1)'·'□')의 list_item 재분류로
+  2차 생성 시 8단계 자동 재번호. hr('─' 구분선) → separator 역매핑.
+- **이미지 placeholder 방출** (gen-image.ts): `![alt](url)`·`<img>`를 1×1
+  placeholder 바이너리(BinData) + 실측 미러 `<hp:pic>`로 방출 — 이미지 참조·표
+  구조가 왕복 보존 (종전 alt 텍스트 각인은 이미지 열 붕괴 원인). GFM 셀·HTML
+  병합 셀·단독 문단 3경로.
+
+#### Fixed
+
+- **ragged HTML 행 격자구멍** (P1-2): colCnt보다 짧은 `<tr>`(rowspan 미커버)의
+  미점유 좌표를 빈 tc로 충전 — malformed 표(행 폭합 ≠ tblW) 방지.
+- **중첩표 containment**: 4000 하한이 좁은 부모 셀폭을 넘으면 상한(셀폭−마진)에
+  양보 — 셀 경계 침범 제거. 시각 baseline seal-nested 재박제(의도 기하 변경).
+- **개조식 장식표 outMargin 절대임계(48000) 제거**: 컬럼폭(bodyWidth) 기준 판정 —
+  커스텀 여백(예: 좌우 35mm)에서 본문폭급 표의 우측 여백 침범(GAP-01 재현) 수정.
+- **목차·장헤더 번호 SSOT**: 표지 제외 h1+h2 단일 배열을 목차와 본문 로마
+  장헤더가 공유 — 2×h1 문서에서 번호 +1 밀림 수정.
+- **computeColWidths 합 불변식**: 음수 잔여(반올림 상향) 회수 루프 추가, 잔여
+  분배 시 80% 캡 존중 — `sum == totalWidth` 상시 보장.
+- **'끝.' 표시 단어경계**: 마침표 동반 독립 토큰만 기존 끝표시로 인정("…성황리에
+  끝" 오인 제거) + 중복 판정을 마지막 렌더 블록 기준으로(말미 표 뒤 누락 수정).
+- **h2 box '□' idempotency**: stripChapterNumber가 말머리 문자(□·○·ㅇ·-·ㆍ)도
+  제거 — 반복 재생성 시 '□ □ 제목' 단조 누적 수정.
+- **빈 번호 문단 카운터 드리프트**: 파서가 텍스트 없는 번호 문단도 카운터를
+  진행(한글 실동작 일치) — 이후 항목 번호 1씩 낮게 재현되던 결함 수정.
+- **서수 시퀀스 단일화**: 파서 자동번호(가나다·원문자)가 생성기 gongmun.ts
+  시퀀스를 재사용 — 15번째+ 형제 mod-14 순환 어긋남 수정.
+- **마크다운 파싱 정밀화** (md-runs): 리스트 중첩 depth를 들여쓰기 스택으로
+  산출(탭·4칸 입력이 8단계 위계를 깨뜨리던 결함), GFM 전부-빈 행을 데이터 행으로
+  보존, 연속 `>` 인용 개행 조인(개조식 ※ 쪼개짐 방지·줄 경계 보존), `_`/`__`
+  강조 단어내부 비활성(snake_case·던더 오염 방지).
+- **벤치 채점기 귀속 오류 3건** (bench/): Pass 3 앵커를 콘텐츠 보유 유닛으로
+  한정, 중복 등장 텍스트 문서순 배정(Pass 1.5), 자동번호 phantom 관용 —
+  recallMicro 0.999985→1, recallDoc 워스트 0.99359→1, phantom 0.000056→0.000003
+  (347건 재채점 악화 0).
+
+#### Changed
+
+- `blocksToSectionXml` 갓함수(~420줄) 분리 (P0-2): SectionOpener("첫 run이
+  secPr/colPr를 나른다" 계약 단일점, 종전 6회 복붙)·buildPreamble·블록타입별
+  render* 핸들러로 분해 — 산출물 바이트 동일(해시 대조).
+- `precomputeGongmunList` 반환이 `GongmunListPlan`(items + indentVariants)으로.
+
+#### 시각 오라클 확대 (P6 — 8종 → 13종, 전부 해밍0)
+
+- 신규 실렌더 baseline 5종: **gaejosik-cover**(표지 투톤 바·제목·날짜·기관명),
+  **gaejosik-body**(장헤더 Ⅰ~Ⅲ + □○-ㆍ 4단계 + ※ + 데이터 표 밀집),
+  **gaejosik-margins35**(커스텀 여백 35mm — outMargin 수정 실렌더 검증),
+  **official-docframe**(결재란+두문+결문 조합), **press-full**(머리박스+부제+담당 표).
+  종전에는 gongmun 프리셋 중 report 1종만 실렌더 커버.
+
+#### 벤치 (전 게이트 PASS + 시각 13/13 해밍0)
+
+| 지표 | 전 | 후 |
+|---|---|---|
+| recallMicro / recallDoc 워스트 | 0.999985 / 0.99359 | **1 / 1** |
+| phantom | 0.000056 | 0.000003 |
+| roundtrip fwd / bwd | 0.999632 / 0.99915 | 0.999816 / 0.999908 |
+| roundtrip tableExact | 0.727848 | **0.879747** |
+| roundtrip cellExact | 0.994702 | 0.995344 |
+
 ## [4.0.3] - 2026-07-11
 
 프로덕션 하드닝 릴리스 — v4.0.0~4.0.2 변경분 전체에 대한 2중 프로덕션 리뷰

@@ -70,6 +70,8 @@ export function newPolicyCounters() {
     excludedElements: {}, // 제외 요소 태그별 카운트
     nestedTables: 0,      // 중첩표 수 (v3.0: 부모 IRCell.blocks에 보존 — 전부 비교 대상)
     trimmedCols: 0,       // 후행 빈 열 트림된 표 수
+    autoNumHeadingParas: 0, // NUMBER/BULLET heading paraPr 사용 문단 수 — phantom 자동번호 관용 게이트
+
   }
 }
 

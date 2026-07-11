@@ -14,12 +14,16 @@ import { CHAR_NORMAL, CHAR_BOLD, CHAR_TABLE_HEADER, PARA_NORMAL, escapeXml, type
 import { generateRuns } from "./md-runs.js"
 import { measureTextWidth } from "./text-metrics.js"
 import { TableBfRegistry, dataCellSpec } from "./gen-table-bf.js"
-import { takeProfile, normalizeAnchor, type ProfileRemap, type TableRemap } from "./gen-profile.js"
+import { takeProfile, normalizeAnchor, normalizeRowAnchor, type ProfileRemap, type TableRemap } from "./gen-profile.js"
+import { DATA_TABLE_ID_BASE } from "./geometry.js"
+import { ImageRegistry, splitImageRefs } from "./gen-image.js"
 
-// 기본 셀 크기 (HWPUnit) — A4 기준 적당한 기본값
-const TABLE_ID_BASE = 1000
+// 표 id 네임스페이스는 geometry.ts SSOT (v4.0.5 P0-3)
+const TABLE_ID_BASE = DATA_TABLE_ID_BASE
 let tableIdCounter = TABLE_ID_BASE
 function nextTableId(): number { return ++tableIdCounter }
+/** 문서 생성마다 표 id 카운터 리셋 — 같은 프로세스 연속 호출에도 결정적 출력 유지 */
+export function resetTableIds(): void { tableIdCounter = TABLE_ID_BASE }
 
 /** 공문서 표 스타일 — gen-section이 ResolvedGongmun에서 해석해 전달 */
 export interface GongmunTableStyle {
@@ -86,10 +90,10 @@ function profileColWidths(tp: TableRemap | null, colCnt: number): number[] | nul
 // 좁게 배분돼 한 글자씩 세로로 갈라졌다 (v4.0.2 실렌더 QA 확인)
 const CELL_PAD = 1200
 
-/** 셀 텍스트 실폭 — 인라인 마크다운 부호 제거, <br> 분리 후 최장 줄 기준 */
+/** 셀 텍스트 실폭 — 인라인 마크다운 부호·이미지 참조 제거, <br> 분리 후 최장 줄 기준 */
 function cellContentWidth(text: string, charHeight: number): number {
   let max = 0
-  for (const seg of text.replace(/\*\*|__|`/g, "").split(/<br\s*\/?>/i)) {
+  for (const seg of text.replace(/!\[[^\]]*\]\([^)\s]+\)/g, "").replace(/\*\*|__|`/g, "").split(/<br\s*\/?>/i)) {
     const w = measureTextWidth(seg.trim(), charHeight, 100)
     if (w > max) max = w
   }
@@ -99,7 +103,7 @@ function cellContentWidth(text: string, charHeight: number): number {
 /** 셀 최장 '어절' 폭 — 열 하한의 기준. 이보다 좁으면 어절이 글자 단위로 세로 분해된다 */
 function cellMinWordWidth(text: string, charHeight: number): number {
   let max = 0
-  for (const seg of text.replace(/\*\*|__|`/g, "").split(/<br\s*\/?>/i)) {
+  for (const seg of text.replace(/!\[[^\]]*\]\([^)\s]+\)/g, "").replace(/\*\*|__|`/g, "").split(/<br\s*\/?>/i)) {
     for (const word of seg.trim().split(/\s+/)) {
       const w = measureTextWidth(word, charHeight, 100)
       if (w > max) max = w
@@ -118,7 +122,7 @@ function cellMinWordWidth(text: string, charHeight: number): number {
  *    확정 열이 각자 균등분할분 이하만 가져가므로 잔여 ≥ 남은 열 수 × 균등분할분
  *    ≥ 남은 열 수 × minW — 음수 폭 불가 불변식 유지.
  */
-function computeColWidths(colMax: number[], totalWidth: number, colMinWord: number[] = []): number[] {
+export function computeColWidths(colMax: number[], totalWidth: number, colMinWord: number[] = []): number[] {
   const colCnt = colMax.length
   const minW = Math.min(Math.max(2000, Math.round(totalWidth * 0.06)), Math.floor(totalWidth / colCnt))
   const cap = Math.round(totalWidth * 0.8)
@@ -146,7 +150,9 @@ function computeColWidths(colMax: number[], totalWidth: number, colMinWord: numb
     // 전 열이 짧은 표(잔여 과잉) — 확정을 버리고 내용폭 비례로 전폭 배분
     // (마지막 한 열만 비대해지는 것 방지, 표 폭은 totalWidth 유지)
     const sumRaw = raw.reduce((a, b) => a + b, 0)
-    for (let i = 0; i < colCnt; i++) widths[i] = raw[i] + Math.floor((raw[i] / sumRaw) * (totalWidth - sumRaw))
+    // raw[i]는 measureTextWidth의 float — 다른 분기(round/floor)와 달리 정수화가 빠져
+    // 소수 폭이 XML로 새면 HWPUNIT 정수 규약 위반·합 불변식 붕괴. round + 80% 캡 재적용.
+    for (let i = 0; i < colCnt; i++) widths[i] = Math.min(cap, Math.round(raw[i]) + Math.floor((raw[i] / sumRaw) * (totalWidth - sumRaw)))
     free.clear()
   } else {
     // 2) 긴 열 비례 배분 — 하한(최장 어절) 미달 열은 하한 확정 후 재배분.
@@ -163,10 +169,24 @@ function computeColWidths(colMax: number[], totalWidth: number, colMinWord: numb
     const sum = [...free].reduce((a, i) => a + raw[i], 0)
     for (const i of free) widths[i] = Math.floor((raw[i] / sum) * budget)
   }
-  // 내림 잔여(0 ≤ r < 열 수)는 내용폭 큰 열부터 1씩
+  // 잔여 정산 — sum == totalWidth 불변식 (v4.0.5 P1-3: 음수 잔여도 정산).
+  // 양수 잔여(내림 손실)는 내용폭 큰 열부터 1씩 — 단 80% 캡 초과 열은 건너뛴다
+  // (전 열 캡 도달 시엔 합 불변식이 캡보다 우선). all-short 분기의 round 상향으로
+  // sum > totalWidth가 되던 케이스는 음수 잔여 루프가 최광열부터 1씩 회수한다.
   let rem = totalWidth - widths.reduce((a, b) => a + b, 0)
   const order = [...raw.keys()].sort((a, b) => raw[b] - raw[a])
-  for (let k = 0; rem > 0; k = (k + 1) % colCnt, rem--) widths[order[k]]++
+  for (let k = 0, skipped = 0; rem > 0; k = (k + 1) % colCnt, rem--) {
+    // 캡 존중: colCnt회 연속 스킵이면 전 열 캡 — 그때만 캡 초과 허용
+    while (widths[order[k]] >= cap && skipped < colCnt) { skipped++; k = (k + 1) % colCnt }
+    skipped = 0
+    widths[order[k]]++
+  }
+  for (let k = 0, spins = 0; rem < 0; k = (k + 1) % colCnt, rem++) {
+    while (widths[order[k]] <= 1 && spins < colCnt) { spins++; k = (k + 1) % colCnt }
+    if (widths[order[k]] <= 1) break // 전 열 1 이하(degenerate) — 더 회수 불가
+    spins = 0
+    widths[order[k]]--
+  }
   return widths
 }
 
@@ -186,7 +206,7 @@ function estimateRowHeight(cells: string[], widths: number[], charHeight: number
 
 // ─── GFM 그리드 표 ──────────────────────────────────
 
-export function generateTable(rows: string[][], theme: ResolvedTheme, style: GongmunTableStyle | null = null, remap: ProfileRemap | null = null, seq = 0): string {
+export function generateTable(rows: string[][], theme: ResolvedTheme, style: GongmunTableStyle | null = null, remap: ProfileRemap | null = null, seq = 0, images: ImageRegistry | null = null): string {
   const rowCnt = rows.length
   const colCnt = Math.max(...rows.map(r => r.length), 1)
   const reg = style?.bfRegistry ?? null
@@ -194,8 +214,10 @@ export function generateTable(rows: string[][], theme: ResolvedTheme, style: Gon
   const totalW = style ? (reg ? style.totalWidth - DATA_TABLE_INSET : style.totalWidth) : 44000
   const measureH = style?.charHeight ?? 1000
 
-  // 서식 프로필 매칭 (#41) — 매칭되면 셀 좌표별 실측 서식 최우선
-  const prof = takeProfile(remap, rowCnt, colCnt, anchorOfMarkdownCell(rows[0]?.[0] ?? ""), seq)
+  // 서식 프로필 매칭 (#41) — 매칭되면 셀 좌표별 실측 서식 최우선.
+  // 첫 행 전체 지문(0.3.0)은 (0,0) 빈 셀일 때의 2순위 키 (이미지 참조는 앵커와 동일 규칙 제거)
+  const rowAnchor = normalizeRowAnchor((rows[0] ?? []).map(c => c.replace(/!\[[^\]]*\]\([^)]*\)/g, "")))
+  const prof = takeProfile(remap, rowCnt, colCnt, anchorOfMarkdownCell(rows[0]?.[0] ?? ""), seq, rowAnchor)
 
   // 열별 최대 내용폭 (헤더 포함 / 본문만) → 비례 열폭 + 짧은 열 가운데 정렬 판단
   const colMax = Array(colCnt).fill(0)
@@ -247,10 +269,24 @@ export function generateTable(rows: string[][], theme: ResolvedTheme, style: Gon
       const paraPrId = style
         ? (centered ? (style.tblCenterParaPr ?? style.centerParaPr) : (reg ? (style.tblLeftParaPr ?? PARA_NORMAL) : PARA_NORMAL))
         : PARA_NORMAL
-      // <br>은 kordoc GFM 셀 규약(파서가 셀 내 개행을 <br>로 방출) — 문단 분리로 복원
+      // <br>은 kordoc GFM 셀 규약(파서가 셀 내 개행을 <br>로 방출) — 문단 분리로 복원.
+      // 셀 안 이미지 참조는 placeholder <hp:pic>로 보존 (v4.0.5 — alt 텍스트 각인이
+      // 이미지 열을 빈 열로 만들어 재파싱 후행 열 트림을 유발하던 결함)
       const p = cell.split(/<br\s*\/?>/i).map((seg) => {
+        let picRuns = ""
+        if (images) {
+          const { text: rest, urls } = splitImageRefs(seg)
+          if (urls.length > 0) {
+            const pics = urls.map((u) => { const part = images.take(u); return part ? images.inlinePicXml(part) : null })
+            if (pics.every(Boolean)) {
+              seg = rest
+              picRuns = `<hp:run charPrIDRef="${cellCharPr}">${pics.join("")}</hp:run>`
+            }
+          }
+        }
         const runs = generateRuns(seg, cellCharPr, prof?.cellChar.has(k) ? undefined : mapId)
-        return `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0">${runs || `<hp:run charPrIDRef="${cellCharPr}"><hp:t></hp:t></hp:run>`}</hp:p>`
+        const body = (runs || (picRuns ? "" : `<hp:run charPrIDRef="${cellCharPr}"><hp:t></hp:t></hp:run>`)) + picRuns
+        return `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0">${body}</hp:p>`
       }).join("")
       // 테두리 — 프로필 실측 최우선, 다음 위계 레지스트리(TBL-01·02), 폴백 기본
       const bf = prof?.cellBf.get(k)
@@ -327,6 +363,18 @@ function layoutHtmlRows(rows: HtmlRowInfo[]): { placed: PlacedHtmlCell[]; rowCnt
       colCnt = Math.max(colCnt, c)
     }
   }
+  // 격자 구멍 충전 (v4.0.5 P1-2) — colCnt보다 짧은 <tr>(rowspan 미커버)은 tc가 누락된
+  // malformed 표가 된다(행 셀폭 합 ≠ tblW → 한컴 거부/오배치). GFM 경로의 빈 셀 패딩과
+  // 대칭으로, 미점유 좌표를 빈 셀로 채워 "모든 행의 tc 폭 합 == tblW"를 보장한다.
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < colCnt; c++) {
+      if (!occupied.has(`${r},${c}`)) {
+        placed.push({ r, c, colSpan: 1, rowSpan: 1, inner: "", isHeader: rows[r].tag === "th" })
+        occupied.add(`${r},${c}`)
+      }
+    }
+  }
+  placed.sort((a, b) => a.r - b.r || a.c - b.c)
   return { placed, rowCnt: rows.length, colCnt }
 }
 
@@ -345,22 +393,28 @@ function unescapeHtml(s: string): string {
  * subList 안에 재귀 생성한다. 파싱 불가면 null (호출부가 문단 폴백).
  * @param totalWidth 표 전체 폭(HWPUNIT) — 중첩표는 부모 셀폭에 맞춰 축소
  */
-export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, totalWidth: number = 44000, style: GongmunTableStyle | null = null, remap: ProfileRemap | null = null, seq = 0): string | null {
+export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, totalWidth: number = 44000, style: GongmunTableStyle | null = null, remap: ProfileRemap | null = null, seq = 0, images: ImageRegistry | null = null): string | null {
   const rows = parseHtmlTable(rawHtml)
   if (!rows || rows.length === 0) return null
   const { placed, rowCnt, colCnt } = layoutHtmlRows(rows)
   if (rowCnt === 0 || colCnt === 0) return null
 
   const measureH = style?.charHeight ?? 1000
-  // 서식 프로필 매칭 (#41)
+  // 서식 프로필 매칭 (#41) — 첫 행 전체 지문(0.3.0)은 병합 셀의 시작 열 위치에 텍스트,
+  // 커버 열은 빈 문자열 (추출기의 row0Texts 키 공간과 동일)
   const first = placed.find(p => p.r === 0 && p.c === 0) ?? placed[0]
-  const prof = takeProfile(remap, rowCnt, colCnt, first ? anchorOfHtmlCell(first.inner) : "", seq)
+  const row0 = Array.from({ length: colCnt }, () => "")
+  for (const cell of placed) {
+    if (cell.r === 0 && cell.c < colCnt) row0[cell.c] = anchorOfHtmlCell(cell.inner)
+  }
+  const prof = takeProfile(remap, rowCnt, colCnt, first ? anchorOfHtmlCell(first.inner) : "", seq, normalizeRowAnchor(row0))
 
   // 열별 최대 내용폭 — colSpan 셀은 폭/span 만큼 각 열에 기여
   const colMax = Array(colCnt).fill(0)
   const colMaxBody = Array(colCnt).fill(0)
   const colMinWord = Array(colCnt).fill(0)
-  const cellLines = placed.map((cell) => htmlCellInnerToLines(cell.inner).lines)
+  const cellParsed = placed.map((cell) => htmlCellInnerToLines(cell.inner))
+  const cellLines = cellParsed.map((p) => p.lines)
   placed.forEach((cell, i) => {
     const w = Math.max(...cellLines[i].map((l) => measureTextWidth(unescapeHtml(l).trim(), measureH, 100)), 0) / cell.colSpan
     // 최장 어절(열 하한) — 병합 셀은 첫 열에만 기여 (분할 배분 시 하한 과대 방지)
@@ -386,9 +440,47 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
   let htmlHeaderRows = 0
   while (htmlHeaderRows < rows.length && rows[htmlHeaderRows].tag === "th") htmlHeaderRows++
 
-  // 표 전체 높이 — 행별 최대 셀높이(rowSpan 셀은 행수로 분배)를 map 안에서 바로 접는다
+  // Pass 1 — 셀별 내용 높이를 재고 행별 최대치(tableRowHeights)를 확정한다.
+  //   · rowSpan은 실제 그리드 행수로 클램프 — 오버스팬은 무효 HWPX + 맨아랫줄 병합셀
+  //     하변 위계(thick) 오판을 부른다.
+  //   · 높이는 명시 <br> 줄 수가 아니라 셀폭 기준 줄바꿈까지 시뮬 — GFM estimateRowHeight와
+  //     정합(명시 개행 없는 긴 서술 셀이 타 뷰어에서 잘리는 것 방지).
   const tableRowHeights = Array<number>(rowCnt).fill(cellH)
-  const tcXmls = placed.map((cell, i) => {
+  const meta = placed.map((cell, i) => {
+    const rowSpan = Math.min(cell.rowSpan, rowCnt - cell.r)
+    const lines = cellLines[i]
+    // 중첩표 — 셀폭(마진 제외)에 맞춰 1회 재귀 생성, Pass 2에서 재사용(재호출 방지)
+    let nestedH = 0
+    const nestedXmls: string[] = []
+    for (const nested of extractTopLevelTables(cell.inner)) {
+      // 중첩표 폭 = 부모 셀폭 − 여유(1020), 가독 하한 4000 — 단 하한이 부모 셀폭을
+      // 넘으면 셀 경계를 침범하므로 상한(셀폭 − 마진 282)에 양보한다 (v4.0.5 P1-3)
+      const sw = spanW(cell)
+      const nestedW = Math.max(Math.min(Math.max(sw - 1020, 4000), sw - 282), 500)
+      const nestedXml = generateHtmlTableXml(nested, theme, nestedW, style ? { ...style, totalWidth: nestedW } : null)
+      if (nestedXml) {
+        nestedXmls.push(nestedXml)
+        // 재귀가 확정한 실높이(hp:sz — 셀 성장·줄바꿈 반영)를 재사용. 행수×cellH 추정은
+        // 중첩 셀이 접히면(긴 텍스트 wrap) 과소해 호스트 행이 중첩표를 못 담았다 (v4.0.4)
+        const szH = nestedXml.match(/<hp:sz [^>]*height="(\d+)"/)?.[1]
+        nestedH += (szH ? Number(szH) : ((nested.match(/<tr[\s>]/gi) ?? []).length) * cellH) + 300
+      }
+    }
+    // 셀폭 기준 줄바꿈 수 — <br> 분리 각 줄이 폭을 넘으면 추가로 접힌다
+    const usable = Math.max(spanW(cell) - CELL_PAD, 1000)
+    let wrapLines = 0
+    for (const line of lines) wrapLines += Math.max(1, Math.ceil(measureTextWidth(unescapeHtml(line).trim(), measureH, 100) / usable))
+    const lineH = style ? Math.round(measureH * 1.6) : 800
+    const contentH = Math.max(cellH * rowSpan, Math.max(wrapLines, 1) * lineH + nestedH)
+    const cellHeight = Math.max(prof?.cellH.get(`${cell.r},${cell.c}`) ?? 0, contentH)
+    const perRow = Math.ceil(cellHeight / rowSpan)
+    for (let r = cell.r; r < cell.r + rowSpan; r++) tableRowHeights[r] = Math.max(tableRowHeights[r], perRow)
+    return { cell, rowSpan, lines, nestedXmls, imgSrcs: cellParsed[i].imgSrcs }
+  })
+
+  // Pass 2 — 확정된 행높이로 셀 XML 생성. 셀 높이 = 점유 행들의 확정 높이 합이라
+  //   같은 행 셀들의 높이가 일치하고 열별 합이 hp:sz(tableH)와 정확히 맞는다.
+  const tcXmls = meta.map(({ cell, rowSpan, lines, nestedXmls, imgSrcs }) => {
     const k = `${cell.r},${cell.c}`
     const isHeader = cell.isHeader
     const baseCharPr = style ? style.charPr : CHAR_NORMAL
@@ -399,36 +491,41 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
     const paraPrId = style
       ? (centered ? (reg ? (style.tblCenterParaPr ?? style.centerParaPr) : style.centerParaPr) : (reg ? (style.tblLeftParaPr ?? PARA_NORMAL) : PARA_NORMAL))
       : PARA_NORMAL
-    const lines = cellLines[i]
-    const paras: string[] = lines.map(line =>
-      `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}"><hp:t>${escapeXml(unescapeHtml(line))}</hp:t></hp:run></hp:p>`,
-    )
-    // 중첩표 — 셀폭(마진 제외)에 맞춰 재귀 생성. 셀 높이는 중첩표만큼 키움
-    // (한컴은 자동 확장하지만 초기 높이가 맞아야 다른 뷰어에서도 안 잘림)
-    let nestedH = 0
-    for (const nested of extractTopLevelTables(cell.inner)) {
-      const nestedW = Math.max(spanW(cell) - 1020, 4000)
-      const nestedXml = generateHtmlTableXml(nested, theme, nestedW, style ? { ...style, totalWidth: nestedW } : null)
-      if (nestedXml) {
-        paras.push(`<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${nestedXml}</hp:run></hp:p>`)
-        nestedH += ((nested.match(/<tr[\s>]/gi) ?? []).length) * cellH + 300
+    // 셀 이미지 — <img src>(imgSrcs)와 라인 내 마크다운 참조를 placeholder pic으로 (v4.0.5)
+    const picUrls: string[] = images ? [...imgSrcs] : []
+    const paras: string[] = []
+    for (const line of lines) {
+      let text = unescapeHtml(line)
+      if (images) {
+        const { text: rest, urls } = splitImageRefs(text)
+        if (urls.length > 0) { picUrls.push(...urls); text = rest }
       }
+      // 이미지 참조만으로 구성된 라인은 텍스트 문단 생략 — 아래 pic 문단이 대체
+      if (!images || text.trim() || picUrls.length === 0) {
+        paras.push(`<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}"><hp:t>${escapeXml(text)}</hp:t></hp:run></hp:p>`)
+      }
+    }
+    if (images && picUrls.length > 0) {
+      const pics = picUrls.map((u) => { const part = images.take(u); return part ? images.inlinePicXml(part) : null }).filter(Boolean)
+      if (pics.length > 0) {
+        paras.push(`<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}">${pics.join("")}</hp:run></hp:p>`)
+      }
+    }
+    for (const nestedXml of nestedXmls) {
+      paras.push(`<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${nestedXml}</hp:run></hp:p>`)
     }
     if (paras.length === 0) {
       paras.push(`<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}"><hp:t></hp:t></hp:run></hp:p>`)
     }
-    // 프로필 실측 높이가 있으면 존중하되, 내용(중첩표 등)이 더 크면 확장
-    const contentH = Math.max(cellH * cell.rowSpan, Math.max(lines.length, 1) * (style ? Math.round(measureH * 1.6) : 800) + nestedH)
-    const cellHeight = Math.max(prof?.cellH.get(k) ?? 0, contentH)
-    const perRow = Math.ceil(cellHeight / cell.rowSpan)
-    for (let r = cell.r; r < Math.min(cell.r + cell.rowSpan, rowCnt); r++) {
-      tableRowHeights[r] = Math.max(tableRowHeights[r], perRow)
-    }
-    // 테두리 — 프로필 최우선, 다음 위계(병합 셀은 끝 행·열 기준 — TBL-01·02·03), 폴백 기본
+    // 셀 높이 = 점유 행들의 확정 높이 합 (같은 행 셀 높이 일치, 합 = hp:sz)
+    let cellHeight = 0
+    for (let r = cell.r; r < cell.r + rowSpan; r++) cellHeight += tableRowHeights[r]
+    const rowEnd = cell.r + rowSpan - 1
+    // 테두리 — 프로필 최우선, 다음 위계(병합 셀은 끝 행·열 기준 — 클램프된 rowSpan), 폴백 기본
     const bf = prof?.cellBf.get(k)
       ?? (reg
         ? reg.get(dataCellSpec({
-            row: cell.r, rowEnd: cell.r + cell.rowSpan - 1, col: cell.c, colEnd: cell.c + cell.colSpan - 1,
+            row: cell.r, rowEnd, col: cell.c, colEnd: cell.c + cell.colSpan - 1,
             rowCnt, colCnt, headerRows: htmlHeaderRows,
             fill: isHeader ? (style!.headerFill ?? "#E6E6E6") : undefined,
           }))
@@ -436,7 +533,7 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
     return `<hp:tc name="" header="${isHeader ? 1 : 0}" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="${bf}">`
       + `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${style ? "CENTER" : "TOP"}" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${paras.join("")}</hp:subList>`
       + `<hp:cellAddr colAddr="${cell.c}" rowAddr="${cell.r}"/>`
-      + `<hp:cellSpan colSpan="${cell.colSpan}" rowSpan="${cell.rowSpan}"/>`
+      + `<hp:cellSpan colSpan="${cell.colSpan}" rowSpan="${rowSpan}"/>`
       + `<hp:cellSz width="${spanW(cell)}" height="${cellHeight}"/>`
       + `<hp:cellMargin left="141" right="141" top="141" bottom="141"/>`
       + `</hp:tc>`

@@ -81,7 +81,11 @@ let pass = 0
 for (const f of files) {
   const buf = fs.readFileSync(path.join(CORPUS, f))
   try {
-    const truth = await renderHwpxToSvg(buf)
+    // truth도 reflow:true — 원본이 혼합 캐시(일부 문단만 linesegarray 없음)인 파일은
+    // 캐시 없는 문단을 흐름 위치에 합성해야 truth가 성립한다(36264961: p17·p19 무캐시,
+    // 종전 truth는 해당 표를 페이지 상단 0에 겹쳐 그림). 전량 캐시 문서는 reflow가
+    // 전 문단 skip(Tier-1 무회귀)이라 truth 불변.
+    const truth = await renderHwpxToSvg(buf, { reflow: true })
     const { out, stripped } = await stripCache(buf)
     const reflow = await renderHwpxToSvg(out, { reflow: true })
     const c = compare(extractTexts(truth.svg), extractTexts(reflow.svg))
@@ -96,9 +100,11 @@ for (const f of files) {
 }
 console.log(`\n게이트: ${pass}/${files.length} 통과`)
 
-// --gate: 통과율 임계(≥90%) 미달 시 exit 1 — 기존 bench:gate 스크립트(--gate)와 관례 통일.
+// --gate: 통과율 임계(100%) 미달 시 exit 1 — 기존 bench:gate 스크립트(--gate)와 관례 통일.
+// 기준선 59/59 = 100% (v4.0.4 Phase 3 개체 흐름 — float/inline/빈문단 pitch/혼합 캐시로
+// 36264961 회복, 전 문단 d=0). 무후퇴 플로어: 한 건이라도 깨지면 실패.
 if (GATE_MODE) {
-  const GATE = 0.9
+  const GATE = 1.0
   if (files.length === 0) {
     console.error(`❌ reflow 게이트: 코퍼스(${CORPUS})가 비어 검증 불가`)
     process.exit(1)

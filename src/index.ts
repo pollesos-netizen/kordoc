@@ -319,7 +319,7 @@ export type {
   FormatProfile, TableProfile, CellProfile, BorderFillDef, BorderDef, CharPrDef,
 } from "./hwpx/generator.js"
 export { hwpxToProfile } from "./hwpx/extract-profile.js"
-export { normalizeGongmunPreset, PRESET_ALIAS } from "./hwpx/gongmun.js"
+export { normalizeGongmunPreset, PRESET_ALIAS, incompatibleGongmunWarnings } from "./hwpx/gongmun.js"
 export { isKnownFont, unknownFontWarnings } from "./hwpx/font-catalog.js"
 export { lintGongmunText, gongmunLintWarnings } from "./hwpx/gongmun-lint.js"
 export type { GongmunLintFinding } from "./hwpx/gongmun-lint.js"

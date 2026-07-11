@@ -11,8 +11,11 @@
 
 import { PARA_NORMAL, CHAR_NORMAL, GONGMUN_RIGHT, GONGMUN_TBL_CENTER, GONGMUN_PARA_APPROVAL, GJ_PARA_BAR, escapeXml } from "./gen-ids.js"
 import { TableBfRegistry } from "./gen-table-bf.js"
+import { EXTRA_TABLE_ID_BASE } from "./geometry.js"
 
-let extraTableId = 9_300_000
+let extraTableId = EXTRA_TABLE_ID_BASE
+/** 문서 생성마다 부속 표 id 카운터 리셋 (결정적 출력) */
+export function resetExtraTableIds(): void { extraTableId = EXTRA_TABLE_ID_BASE }
 
 export function tbl(rows: string[], w: number, h: number, cols: number): string {
   return `<hp:tbl id="${++extraTableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" rowCnt="${rows.length}" colCnt="${cols}" cellSpacing="0" borderFillIDRef="1" noAdjust="1">`
@@ -24,8 +27,8 @@ export function tbl(rows: string[], w: number, h: number, cols: number): string 
     + `</hp:tbl>`
 }
 
-export function tc(opts: { bf: number; row: number; col: number; w: number; h: number; colSpan?: number; paras: string }): string {
-  return `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="${opts.bf}">`
+export function tc(opts: { bf: number; row: number; col: number; w: number; h: number; colSpan?: number; paras: string; name?: string }): string {
+  return `<hp:tc name="${opts.name ?? ""}" header="0" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="${opts.bf}">`
     + `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${opts.paras}</hp:subList>`
     + `<hp:cellAddr colAddr="${opts.col}" rowAddr="${opts.row}"/>`
     + `<hp:cellSpan colSpan="${opts.colSpan ?? 1}" rowSpan="1"/>`
@@ -72,9 +75,14 @@ export function buildApprovalTable(labels: string[], reg: TableBfRegistry, appro
 
 // ─── "끝." 표시 (B11) ────────────────────────────────
 
-/** 본문이 이미 "끝."으로 마감되었는지 — 중복 방지 */
+/**
+ * 본문이 이미 "끝."으로 마감되었는지 — 중복 방지.
+ * 규정 관용구는 마침표를 동반한 "끝."이다 — 마침표 없는 "…성황리에 끝" 같은 정상
+ * 본문 꼬리를 끝표시로 오인해 필수 "끝." 방출이 무음 누락되던 결함 수정 (v4.0.5).
+ * 독립 토큰(문두 또는 공백 뒤) "끝." / "끝 ."만 인정한다.
+ */
 export function hasEndMark(lastText: string): boolean {
-  return /끝\s*\.?\s*$/.test(lastText.trim())
+  return /(^|\s)끝\s*\.\s*$/.test(lastText.trim())
 }
 
 /** "끝." 문단 — 규정(2타 공백 후 "끝.") 반영, 단독 문단(실측 GT12 변형) */
@@ -100,9 +108,10 @@ export function buildTitleBox(title: string, titleCharPr: number, barCharPr: num
   // 바 셀 빈 문단 — 1pt 극소 스페이서(실측: GT6/GT7 함초롬바탕 1pt 빈런, TBL-12).
   // 전용 1pt charPr를 사용하고 행높이는 셀 h로 강제한다.
   const barPara = para("", GJ_PARA_BAR, barCharPr)
+  // 왕복 채널 (P2) — 제목박스가 소비한 첫 h1을 재파싱 시 헤딩으로 복원
   const rows = [
     tc({ bf: barTop, row: 0, col: 0, w, h: TITLE_BOX.barH, paras: barPara }),
-    tc({ bf: mid, row: 1, col: 0, w, h: TITLE_BOX.titleH, paras: para(title, GONGMUN_TBL_CENTER, titleCharPr) }),
+    tc({ bf: mid, row: 1, col: 0, w, h: TITLE_BOX.titleH, paras: para(title, GONGMUN_TBL_CENTER, titleCharPr), name: "__kordoc_h1" }),
     tc({ bf: barBottom, row: 2, col: 0, w, h: TITLE_BOX.barH, paras: barPara }),
   ]
   const table = tbl(rows, w, TITLE_BOX.barH * 2 + TITLE_BOX.titleH, 1)

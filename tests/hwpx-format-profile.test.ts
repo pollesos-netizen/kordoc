@@ -268,7 +268,7 @@ describe("hwpxToProfile — 추출", () => {
       "</table>",
     ].join("\n")
     const prof = await hwpxToProfile(await markdownToHwpx(merged))
-    assert.equal(prof.schema_version, "0.2.0")
+    assert.equal(prof.schema_version, "0.3.0")
     assert.equal(prof.tables.length, 1)
     const t = prof.tables[0]
     assert.equal(t.table_index, 0)
@@ -334,5 +334,104 @@ describe("round-trip — generate(profile) → hwpxToProfile → 재생성", () 
     assert.match(header, /height="1400"[^>]*bold="1"/)
     assert.match(section, /<hp:cellSz width="10000"/)
     assert.match(section, /<hp:cellSz width="34000"/)
+  })
+})
+
+describe("폰트명 왕복 (스키마 0.3.0)", () => {
+  const profile: FormatProfile = {
+    tables: [{
+      table_index: 0, rows: 2, cols: 2,
+      cells: [{ row: 0, col: 0, charPrIDRef: "cp" }],
+      used_border_fills: {},
+      used_char_prs: { "cp": { height_hwpunit: "1200", fontRef_hangul: "7", fontName_hangul: "휴먼명조" } },
+    }],
+  }
+
+  it("fontName_hangul이 header fontface로 append되고 charPr가 참조한다 (순번 폴딩 제거)", async () => {
+    const { header } = await parts(await markdownToHwpx(GFM, { profile }))
+    // 정적 3종(0~2) 뒤 id 3으로 append — HANGUL·LATIN 양쪽
+    assert.match(header, /<hh:fontface lang="HANGUL" fontCnt="4">/)
+    assert.match(header, /<hh:fontface lang="LATIN" fontCnt="4">/)
+    assert.match(header, /<hh:font id="3" face="휴먼명조"/)
+    // charPr는 append 글꼴 id 참조 (이름 없던 시절의 0 폴딩 아님), 1종 언어는 0
+    assert.match(header, /<hh:fontRef hangul="3" latin="3" hanja="0"/)
+  })
+
+  it("같은 글꼴 이름은 표·charPr를 넘어 dedupe된다", () => {
+    const two: FormatProfile = {
+      tables: [0, 1].map(i => ({
+        table_index: i, rows: 1, cols: 1,
+        cells: [{ row: 0, col: 0, charPrIDRef: "cp" }],
+        used_border_fills: {},
+        used_char_prs: { "cp": { fontName_hangul: "휴먼명조" } },
+      })),
+    }
+    const remap = buildProfileRemap(two, 11, 3, 3)
+    assert.deepEqual(remap.fontFaces, ["휴먼명조"])
+    assert.match(remap.charPrXmls[0], /hangul="3"/)
+    assert.match(remap.charPrXmls[1], /hangul="3"/)
+  })
+
+  it("추출 → 재생성 왕복: 원본 fontfaces의 글꼴 이름이 생성 문서에 살아남는다", async () => {
+    const gen1 = await markdownToHwpx(GFM, { profile })
+    const extracted = await hwpxToProfile(gen1)
+    const cps = Object.values(extracted.tables[0].used_char_prs!)
+    assert.ok(cps.some(c => c.fontName_hangul === "휴먼명조"), `추출 charPr에 휴먼명조 없음: ${JSON.stringify(cps)}`)
+    const { header } = await parts(await markdownToHwpx(GFM, { profile: extracted }))
+    assert.match(header, /face="휴먼명조"/)
+  })
+})
+
+describe("앵커 다중 지문 — anchor_row (0.3.0)", () => {
+  it("(0,0) 빈 셀 크로스탭 — 순번이 어긋나도 첫 행 지문으로 매칭된다", async () => {
+    const gfm = "|  | 상반기 | 하반기 |\n|---|---|---|\n| 서울 | 1 | 2 |"
+    const profile: FormatProfile = {
+      tables: [{
+        table_index: 9, // 의도적으로 어긋난 순번 — anchor_row가 없으면 매칭 실패
+        rows: 2, cols: 3,
+        anchor_row: "|상반기|하반기",
+        cells: [{ row: 0, col: 1, borderFillIDRef: "hd" }],
+        used_border_fills: { "hd": { fill: { faceColor: "#ABCDEF" } } },
+      }],
+    }
+    const { header, section } = await parts(await markdownToHwpx(gfm, { profile }))
+    assert.match(header, /<hh:winBrush faceColor="#ABCDEF"/)
+    assert.match(section, /borderFillIDRef="3"/)
+  })
+
+  it("동형이지만 첫 행이 다른 표에는 적용하지 않는다 (오적용 방지)", async () => {
+    const gfm = "|  | 1분기 | 2분기 |\n|---|---|---|\n| 서울 | 1 | 2 |"
+    const profile: FormatProfile = {
+      tables: [{
+        table_index: 9, rows: 2, cols: 3,
+        anchor_row: "|상반기|하반기",
+        cells: [{ row: 0, col: 1, borderFillIDRef: "hd" }],
+        used_border_fills: { "hd": { fill: { faceColor: "#ABCDEF" } } },
+      }],
+    }
+    // borderFill XML은 매칭 여부와 무관하게 header에 방출된다 — 셀 참조(id 3)만 게이트
+    const { section } = await parts(await markdownToHwpx(gfm, { profile }))
+    assert.doesNotMatch(section, /borderFillIDRef="3"/)
+  })
+
+  it("추출기가 첫 행 지문을 담는다 — 병합 행0도 col_widths 분배로 보존", async () => {
+    // 행0 전체 병합(colspan=2) — 종전에는 col_widths_hwpunit 소실
+    const html = `<table><tr><td colspan="2">제목</td></tr><tr><td>가</td><td>나</td></tr></table>`
+    const extracted = await hwpxToProfile(await markdownToHwpx(html))
+    const t = extracted.tables[0]
+    assert.equal(t.anchor_row, "제목|") // 병합 커버 열은 빈 슬롯 — 소비측과 동일 키 공간
+    assert.equal(t.col_widths_hwpunit?.length, 2)
+    // 행1 span-1 셀 실폭으로 확정 (합 ≈ 표폭)
+    const sum = t.col_widths_hwpunit!.map(Number).reduce((a, b) => a + b, 0)
+    const w = Number(t.width_hwpunit)
+    assert.ok(Math.abs(sum - w) <= 2, `col_widths 합 ${sum} ≠ 표폭 ${w}`)
+  })
+
+  it("모든 행이 병합인 열도 균등 분배로 col_widths가 나온다", async () => {
+    const html = `<table><tr><td colspan="2">가</td></tr><tr><td colspan="2">나</td></tr></table>`
+    const extracted = await hwpxToProfile(await markdownToHwpx(html))
+    const t = extracted.tables[0]
+    assert.equal(t.cols, 2)
+    assert.equal(t.col_widths_hwpunit?.length, 2)
   })
 })

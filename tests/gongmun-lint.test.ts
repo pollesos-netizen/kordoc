@@ -46,4 +46,14 @@ describe("공문서 표기법 검수", () => {
     assert.equal(warns.length, 6, "5건 + 요약 1건")
     assert.ok(warns[5].includes("더 있음"))
   })
+
+  it("v4.0.4 회귀 — 펜스 비대칭·DATE_ZERO_PAD 앵커·양쪽 공백 쌍점", () => {
+    // 코드펜스는 같은 마커로만 닫힘 — ```블록 안 ~~~ 줄이 조기 종료시키지 않음
+    assert.equal(rulesOf("```\n2025.1.6\n~~~\n붙임: 계획서\n").filter((r) => r === "DATE_NO_SPACE").length, 0, "``` 안 날짜 스킵")
+    // DATE_ZERO_PAD 둘째 대안 연도 앵커 — 하위조항 번호 오탐 방지
+    assert.equal(rulesOf("제3.01.호에 따라").filter((r) => r === "DATE_ZERO_PAD").length, 0, "'제3.01.호' 오탐 금지")
+    assert.equal(rulesOf("v2.05.1 배포").filter((r) => r === "DATE_ZERO_PAD").length, 0, "버전 번호 오탐 금지")
+    // COLON_SPACE 양쪽 공백 케이스도 검출
+    assert.ok(rulesOf("원장 : 김갑동").includes("COLON_SPACE"), "양쪽 공백 쌍점 검출")
+  })
 })

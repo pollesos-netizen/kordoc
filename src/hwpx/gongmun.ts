@@ -258,6 +258,30 @@ function validateGongmunOptions(opts: GongmunOptions): void {
   }
 }
 
+/**
+ * 프리셋과 비호환이라 resolveGongmun이 조용히 폐기/무시하는 옵션의 경고 목록 (v4.0.6).
+ * 순수 함수 — 배선은 호출자 몫 (CLI stderr / MCP 응답 병기, unknownFontWarnings 관례).
+ * 게이팅 조건은 resolveGongmun 본문과 1:1 — 여기 조건을 바꾸면 본문도 함께.
+ */
+export function incompatibleGongmunWarnings(opts: GongmunOptions): string[] {
+  const warns: string[] = []
+  const preset = normalizeGongmunPreset(opts.preset)
+  if (opts.docHead && preset !== "official") warns.push(`doc_head(두문)는 기안문(official) 전용 — '${preset}' 프리셋에서 무시됨`)
+  if (opts.docFoot && preset !== "official") warns.push(`doc_foot(결문)는 기안문(official) 전용 — '${preset}' 프리셋에서 무시됨`)
+  if (opts.noticeHead && preset !== "notice") warns.push(`notice_head(공고번호·발신명의)는 통지(notice) 전용 — '${preset}' 프리셋에서 무시됨`)
+  if (opts.press && preset !== "press") warns.push(`press(머리박스·부제·담당)는 보도자료(press) 전용 — '${preset}' 프리셋에서 무시됨`)
+  if (preset === "press" && (opts.cover === true || typeof opts.cover === "object" || opts.toc === true)) {
+    warns.push("보도자료는 머리박스 서식과 양립 불가라 표지·목차가 무시됨")
+  }
+  if (opts.sizes && Object.keys(opts.sizes).length > 0 && !usesReportFonts(preset)) {
+    warns.push(`sizes(개조식 요소 크기)는 개조식·보고서·계획서 전용 — '${preset}' 프리셋에서 무시됨`)
+  }
+  if (opts.suppressSingle && (opts.numbering ?? PRESET_DEFAULTS[preset].numbering) !== "standard") {
+    warns.push(`suppress_single(단일 형제 부호 생략)은 법정 번호(standard) 전용 — '${preset}' 프리셋(불릿 체계)에서 무동작`)
+  }
+  return warns
+}
+
 export function resolveGongmun(opts: GongmunOptions): ResolvedGongmun {
   validateGongmunOptions(opts)
   const preset = normalizeGongmunPreset(opts.preset)
@@ -330,14 +354,25 @@ export function hangulOrdinal(n: number): string {
   return String.fromCodePoint(0xac00 + init * 588 + vowel * 28)
 }
 
-/** 0-based n → ① ② ③ … (U+2460~). 20 초과 시 순환(실무상 도달 불가) */
+/**
+ * 0-based n → ① ② … ⑳ ㉑ … ㊿ (U+2460~ / U+3251~ / U+32B1~, 50까지).
+ * 초과(실무 도달 불가)는 순환 대신 '(51)' 괄호수 — 파서 자동번호 폴백
+ * (para-heading CIRCLED_DIGIT)과 같은 규칙이라 왕복 시 마커가 어긋나지 않는다 (v4.0.4)
+ */
 export function circledNumber(n: number): string {
-  return String.fromCodePoint(0x2460 + (n % 20))
+  if (n < 20) return String.fromCodePoint(0x2460 + n)        // ①~⑳
+  if (n < 35) return String.fromCodePoint(0x3251 + (n - 20)) // ㉑~㉟
+  if (n < 50) return String.fromCodePoint(0x32b1 + (n - 35)) // ㊱~㊿
+  return `(${n + 1})`
 }
 
-/** 0-based n → ㉮ ㉯ ㉰ … ㉻ (U+326E~, 14자). 초과 시 순환 */
+/**
+ * 0-based n → ㉮ ㉯ ㉰ … ㉻ (U+326E~, 14자). 15번째+는 순환 대신 가나다 서수 —
+ * 파서 자동번호 폴백(para-heading CIRCLED_HANGUL_SYLLABLE)과 동일 규칙 (v4.0.4).
+ * 순환(mod 14)이면 15번째가 ㉮로 되돌아가 형제 순번 재유도가 모호해진다
+ */
 export function circledHangul(n: number): string {
-  return String.fromCodePoint(0x326e + (n % 14))
+  return n < 14 ? String.fromCodePoint(0x326e + n) : hangulOrdinal(n)
 }
 
 /** 보고서 모드 단계별 불릿(정부 보고서 관행: □ 대 / ○·ㅇ 중 / - 소 / ㆍ 세) */
@@ -477,7 +512,5 @@ export class GongmunNumberer {
 
 // ─── HWPUNIT 환산 ───────────────────────────────────
 
-/** 1mm → HWPUNIT (7200/25.4) */
-export function mmToHwpunit(mm: number): number {
-  return Math.round((mm * 7200) / 25.4)
-}
+// 정의는 geometry.ts SSOT로 이동 (v4.0.5 P0-3) — 기존 소비처 호환 재수출
+export { mmToHwpunit } from "./geometry.js"

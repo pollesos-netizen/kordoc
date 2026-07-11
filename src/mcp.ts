@@ -5,9 +5,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 import { readFileSync, writeFileSync, realpathSync, openSync, readSync, closeSync, statSync, mkdirSync } from "fs"
 import { resolve, isAbsolute, extname, dirname } from "path"
-import { parse, detectFormat, detectZipFormat, blocksToMarkdown, compare, extractFormFields, fillFormFields, markdownToHwpx, fillHwpx, patchHwpx, patchHwp, unknownFontWarnings, gongmunLintWarnings } from "./index.js"
+import { parse, detectFormat, detectZipFormat, blocksToMarkdown, compare, extractFormFields, fillFormFields, markdownToHwpx, fillHwpx, patchHwpx, patchHwp, unknownFontWarnings, incompatibleGongmunWarnings, gongmunLintWarnings, PRESET_ALIAS } from "./index.js"
 import { fillWithUniqueGuard, type FillInput } from "./form/match.js"
 import type { GongmunOptions } from "./index.js"
+import {
+  buildGongmunOptions, BODY_FONTS, H2_MARKERS, BULLET2_CHARS,
+  FONT_ROLE_KEYS, SIZE_KEYS, DOC_HEAD_KEYS, DOC_FOOT_KEYS, NOTICE_HEAD_KEYS, PRESS_CONTACT_KEYS,
+  BODY_PT_RANGE, LINE_SPACING_RANGE, SIZE_PT_RANGE, APPROVAL_MAX,
+} from "./hwpx/gongmun-surface.js"
 import { VERSION, toArrayBuffer, sanitizeError, KordocError } from "./utils.js"
 import { extractHwp5MetadataOnly } from "./hwp5/parser.js"
 import { extractHwpxMetadataOnly } from "./hwpx/parser.js"
@@ -152,14 +157,20 @@ server.tool(
 
 server.tool(
   "detect_format",
-  "파일의 포맷을 매직 바이트로 감지합니다 (hwpx, hwp, pdf, unknown).",
+  "파일의 포맷을 매직 바이트로 감지합니다 (hwpx, hwp, pdf, xlsx, docx, unknown).",
   {
     file_path: z.string().min(1).describe("감지할 파일의 절대 경로"),
   },
   async ({ file_path }) => {
     try {
       const resolved = safePath(file_path)
-      const format = detectFormatFromHeader(resolved)
+      let format: string = detectFormatFromHeader(resolved)
+      // 16바이트 헤더로는 모든 ZIP이 'hwpx'로 나온다 — 파일을 읽어 내부 구조로
+      // hwpx/xlsx/docx 세분화 (parse_metadata와 판정 일치, v4.0.6)
+      if (format === "hwpx") {
+        const { buffer } = readValidatedFile(file_path, MAX_METADATA_FILE_SIZE)
+        format = await detectZipFormat(buffer)
+      }
       return {
         content: [{ type: "text", text: `${file_path}: ${format}` }],
       }
@@ -698,84 +709,97 @@ server.tool(
 
 // ─── 도구: generate_document ─────────────────────────
 
+// ─── 도구: extract_profile ───────────────────────────
+
+server.tool(
+  "extract_profile",
+  "참조 HWPX 문서에서 표 서식 프로필(테두리·음영·열 너비·셀 글꼴)을 JSON으로 추출합니다. 추출한 프로필을 generate_document의 profile_path로 넘기면 원본 문서 없이 같은 표 서식을 재현합니다 — \"이 문서 표 서식 그대로 만들어줘\" 워크플로의 1단계.",
+  {
+    hwpx_path: z.string().min(1).describe("서식을 추출할 참조 HWPX 파일의 절대 경로"),
+    output_path: z.string().min(1).describe("프로필 JSON 출력 절대 경로 (.json 권장)"),
+  },
+  async ({ hwpx_path, output_path }) => {
+    try {
+      const { buffer } = readValidatedFile(hwpx_path)
+      const { hwpxToProfile } = await import("./index.js")
+      const profile = await hwpxToProfile(buffer)
+      const out = resolve(output_path)
+      mkdirSync(dirname(out), { recursive: true })
+      writeFileSync(out, JSON.stringify(profile, null, 2))
+      return {
+        content: [{ type: "text", text: `서식 프로필 추출 완료: 표 ${profile.tables.length}개 → ${out}\n(generate_document의 profile_path로 사용)` }],
+      }
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `오류: ${sanitizeError(err)}` }],
+        isError: true,
+      }
+    }
+  }
+)
+
 server.tool(
   "generate_document",
   "마크다운을 HWPX 한글 문서로 생성합니다. \"보고서로/공문서로/개조식으로/계획서로 뽑아줘·만들어줘\" 요청이 이 도구입니다. 프리셋 매핑: 정부 표준 보고서(표지·목차·로마숫자 장헤더 자동)='개조식', 기안문·시행문·알림공문='기안문', 1페이지 요약보고서='보고서', 추진계획='계획서'. 표는 실측 정부 서식(헤더 음영+이중선·외곽 굵은선·내용 비례 열폭), 쪽번호·결재란·'끝.' 표시 지원. ⚠ 생성 전 확인 권장: 문서종류(보고서/기안문)·제목·기관명(org)·날짜·목차 여부가 불명확하면 사용자에게 물어보세요 — 엉뚱한 프리셋 선택이 가장 흔한 오생성 원인. 마크다운 규칙: #(h1)=문서 제목(표지), ##(h2)=장(Ⅰ Ⅱ Ⅲ 자동), 리스트 깊이=□ ○ - ㆍ 부호, ※시작 문단=참고 스타일, <right>텍스트</right>=우측정렬 출처행. (원본 서식 보존 제자리 수정은 patch_document, 서식 빈칸 채우기는 fill_form)",
   {
     markdown: z.string().min(1).describe("HWPX로 변환할 마크다운 전문. 표는 GFM 문법 사용 (예: '| 이름 | 부서 |\\n| --- | --- |\\n| 홍길동 | 기획팀 |')"),
     output_path: z.string().min(1).describe("출력 HWPX 파일의 절대 경로 (.hwpx 권장)"),
-    preset: z.enum(["기안문", "보고서", "계획서", "통지", "회의록", "개조식", "개조식보고서", "정부보고서", "정부표준개조식보고서", "보도자료", "official", "report", "plan", "notice", "minutes", "gaejosik", "press"]).optional()
+    profile_path: z.string().optional().describe("서식 프로필 JSON 경로 (extract_profile로 추출) — 참조 문서의 표 테두리·음영·열폭·셀 글꼴을 재현. 표 행·열 수와 첫 셀 텍스트가 일치하는 표에만 적용"),
+    // 값 집합·범위는 gongmun-surface SSOT에서 파생 (CLI와 드리프트 불가 — v4.0.4 영역1-1)
+    preset: z.enum(Object.keys(PRESET_ALIAS) as [string, ...string[]]).optional()
       .describe("공문서 프리셋 — 지정 시 한국 행정 공문서 표준 서식 적용. '개조식'=정부 표준 개조식 보고서(표지·목차·로마숫자 장 헤더 자동 + □○-※ 부호별 폰트), '보도자료'=머리박스+제목 25pt+□→ㅇ→*(각주) 체계. 미지정 시 범용 마크다운 변환"),
-    font: z.enum(["myeongjo", "gothic"]).optional().describe("본문 글꼴(공문서 모드): myeongjo=명조 계열(개조식·보고서·계획서는 실측 휴먼명조, 그 외 함초롬바탕), gothic=맑은 고딕"),
-    body_pt: z.number().int().min(6).max(40).optional().describe("본문 글자 크기(pt, 공문서 모드). 기본: 기안문 12, 보고서·계획서·통지 15"),
+    font: z.enum(BODY_FONTS).optional().describe("본문 글꼴(공문서 모드): myeongjo=명조 계열(개조식·보고서·계획서는 실측 휴먼명조, 그 외 함초롬바탕), gothic=맑은 고딕"),
+    body_pt: z.number().int().min(BODY_PT_RANGE.min).max(BODY_PT_RANGE.max).optional().describe("본문 글자 크기(pt, 공문서 모드). 기본: 기안문 12, 보고서·계획서·통지 15"),
+    line_spacing: z.number().int().min(LINE_SPACING_RANGE.min).max(LINE_SPACING_RANGE.max).optional().describe("본문 줄간격(%, 공문서 모드). 기본: 프리셋별 실측값(기안문 160, 회의록 130 등)"),
     org: z.string().optional().describe("표지 기관명 (표지를 켜는 모든 프리셋에서 사용 가능). 미지정 시 표지에 기관명 생략"),
     date: z.string().optional().describe("표지 날짜 ('YYYY. M. D.' 표기 권장). 미지정 시 오늘 날짜"),
     toc: z.boolean().optional().describe("목차 페이지 생성 여부 — h2 목록을 Ⅰ Ⅱ Ⅲ 장으로 자동 구성. 전 프리셋 사용 가능(보도자료 제외). 미지정 시 개조식 프리셋만 켜짐"),
     cover: z.boolean().optional().describe("표지 페이지 생성 여부 — 첫 h1을 제목으로 파랑 장식 표지. 전 프리셋 사용 가능(보도자료 제외 — 머리박스 서식과 양립 불가). 미지정 시 개조식 프리셋만 켜짐 (org/date 지정 시 자동 켜짐)"),
-    approval: z.array(z.string()).max(6).optional().describe("결재란 직위 라벨 (최대 6개, 예: ['담당','팀장','과장']) — 문서 최상단 우측에 서명 공란 결재 표 생성"),
+    approval: z.array(z.string()).max(APPROVAL_MAX).optional().describe("결재란 직위 라벨 (최대 6개, 예: ['담당','팀장','과장']) — 문서 최상단 우측에 서명 공란 결재 표 생성"),
     page_numbers: z.boolean().optional().describe("쪽번호(하단 중앙 '- 1 -', 표지·목차 카운트 제외). 미지정 시 개조식·보고서·계획서 켜짐"),
     end_mark: z.boolean().optional().describe("본문 끝 '끝.' 표시 (행정업무규정). 미지정 시 기안문만 켜짐, 본문이 이미 '끝.'으로 끝나면 중복 생성 안 함"),
     body_title_box: z.boolean().optional().describe("본문 첫 페이지 제목 반복 박스 (개조식 실측 관행). 미지정 시 개조식+표지 조합에서 켜짐"),
-    h2_marker: z.enum(["box", "number", "none"]).optional().describe("h2 섹션 제목 말머리(비개조식): box='□ 제목'(실측 보고서 관행), number='1. 제목'(공고문 관행), none=말머리 없음. 미지정 시 보고서·계획서 box, 그 외 none"),
-    fonts: z.object({
-      body: z.string().optional(), heading: z.string().optional(), ref: z.string().optional(), table: z.string().optional(),
-    }).optional().describe("요소별 글꼴 오버라이드(공문서 모드) — body=본문(○·-)/heading=제목 계열(□·장헤더·표지·목차)/ref=※ 참고/table=표 셀. 개조식·보고서·계획서는 네 역할 전부, 그 외 프리셋은 body만 적용"),
-    sizes: z.object({
-      dae: z.number().min(6).max(60).optional(), cham: z.number().min(6).max(60).optional(),
-      chapter: z.number().min(6).max(60).optional(), coverTitle: z.number().min(6).max(60).optional(),
-      coverSub: z.number().min(6).max(60).optional(), tocLabel: z.number().min(6).max(60).optional(),
-      tocRoman: z.number().min(6).max(60).optional(), tocItem: z.number().min(6).max(60).optional(),
-      table: z.number().min(6).max(60).optional(),
-    }).optional().describe("개조식 요소별 글자 크기(pt) 오버라이드 — dae=□/cham=※/chapter=장헤더/coverTitle·coverSub=표지/tocLabel·tocRoman·tocItem=목차/table=표 셀. 미지정 요소는 body_pt 비례 기본값"),
-    bullet2: z.enum(["ㅇ", "○"]).optional().describe("2단계 항목부호 — 'ㅇ'(이응, 전자결재 기안문·공고문 실측 지배) / '○'(원, 보고서 양식). 미지정 시 통지·보도자료 ㅇ, 그 외 ○"),
+    h2_marker: z.enum(H2_MARKERS).optional().describe("h2 섹션 제목 말머리(비개조식): box='□ 제목'(실측 보고서 관행), number='1. 제목'(공고문 관행), none=말머리 없음. 미지정 시 보고서·계획서 box, 그 외 none"),
+    fonts: z.object(Object.fromEntries(FONT_ROLE_KEYS.map(k => [k, z.string().optional()])))
+      .optional().describe("요소별 글꼴 오버라이드(공문서 모드) — body=본문(○·-)/heading=제목 계열(□·장헤더·표지·목차)/ref=※ 참고/table=표 셀. 개조식·보고서·계획서는 네 역할 전부, 그 외 프리셋은 body만 적용"),
+    sizes: z.object(Object.fromEntries(SIZE_KEYS.map(k => [k, z.number().min(SIZE_PT_RANGE.min).max(SIZE_PT_RANGE.max).optional()])))
+      .optional().describe("개조식 요소별 글자 크기(pt) 오버라이드 — dae=□/cham=※/chapter=장헤더/coverTitle·coverSub=표지/tocLabel·tocRoman·tocItem=목차/table=표 셀/bodyTitle=본문 첫 페이지 제목 반복 박스. 미지정 요소는 body_pt 비례 기본값"),
+    bullet2: z.enum(BULLET2_CHARS).optional().describe("2단계 항목부호 — 'ㅇ'(이응, 전자결재 기안문·공고문 실측 지배) / '○'(원, 보고서 양식). 미지정 시 통지·보도자료 ㅇ, 그 외 ○"),
     suppress_single: z.boolean().optional().describe("단일 형제 항목 부호 생략(편람 규정, 법정 번호 standard 전용 — 불릿 체계인 보고서·계획서·개조식·보도자료엔 무효). 기본 false — 하나뿐인 항목에도 부호(1. 가.)를 부여 (부호 없는 계단 들여쓰기가 실무 눈에 어색)"),
-    doc_head: z.object({
-      org: z.string().optional(), to: z.string().optional(), via: z.string().optional(), title: z.string().optional(),
-    }).optional().describe("기안문 두문(별지 제1호서식) — org=행정기관명(18pt bold 중앙)/to=수신/via=경유/title=제목. 기안문 프리셋 전용"),
-    doc_foot: z.object({
-      sender: z.string().optional(), drafter: z.string().optional(), reviewer: z.string().optional(), approver: z.string().optional(),
-      cooperator: z.string().optional(), docNum: z.string().optional(), receive: z.string().optional(),
-      address: z.string().optional(), site: z.string().optional(), phone: z.string().optional(), fax: z.string().optional(),
-      email: z.string().optional(), disclosure: z.string().optional(),
-    }).optional().describe("기안문 결문 — sender=발신명의(22pt 중앙)/drafter·reviewer·approver=기안·검토·결재/docNum=시행/receive=접수/disclosure=공개구분 등. 기안문 프리셋 전용"),
+    doc_head: z.object(Object.fromEntries(DOC_HEAD_KEYS.map(k => [k, z.string().optional()])))
+      .optional().describe("기안문 두문(별지 제1호서식) — org=행정기관명(18pt bold 중앙)/to=수신/via=경유/title=제목. 기안문 프리셋 전용"),
+    doc_foot: z.object(Object.fromEntries(DOC_FOOT_KEYS.map(k => [k, z.string().optional()])))
+      .optional().describe("기안문 결문 — sender=발신명의(22pt 중앙)/drafter·reviewer·approver=기안·검토·결재/docNum=시행/receive=접수/disclosure=공개구분 등. 기안문 프리셋 전용"),
     report_info: z.string().optional().describe("업무보고 우상단 보고정보 행 — 예: '(2026. 7. 11., 과장 홍길동, ☎02-120)' (실측: 12pt 우측정렬)"),
-    notice_head: z.object({
-      no: z.string().optional(), date: z.string().optional(), sender: z.string().optional(),
-    }).optional().describe("공고문 두문·결문 — no=공고번호(본문 위 bold)/date=날짜(본문 아래 우측)/sender=발신명의(우측 bold). 통지 프리셋 전용"),
+    notice_head: z.object(Object.fromEntries(NOTICE_HEAD_KEYS.map(k => [k, z.string().optional()])))
+      .optional().describe("공고문 두문·결문 — no=공고번호(본문 위 bold)/date=날짜(본문 아래 우측)/sender=발신명의(우측 bold). 통지 프리셋 전용"),
     press: z.object({
       release: z.string().optional(), distribute: z.string().optional(),
       sub: z.array(z.string()).optional(),
-      contact: z.object({ dept: z.string().optional(), manager: z.string().optional(), phone: z.string().optional() }).optional(),
+      contact: z.object(Object.fromEntries(PRESS_CONTACT_KEYS.map(k => [k, z.string().optional()]))).optional(),
     }).optional().describe("보도자료 옵션 — release=보도시점/distribute=배포일(머리박스)/sub=부제 배열('- … -')/contact=담당 부서·담당자·연락처 표"),
   },
-  async ({ markdown, output_path, preset, font, body_pt, org, date, toc, cover, approval, page_numbers, end_mark, body_title_box, h2_marker, fonts, sizes, bullet2, suppress_single, doc_head, doc_foot, report_info, notice_head, press }) => {
+  async ({ markdown, output_path, profile_path, preset, font, body_pt, line_spacing, org, date, toc, cover, approval, page_numbers, end_mark, body_title_box, h2_marker, fonts, sizes, bullet2, suppress_single, doc_head, doc_foot, report_info, notice_head, press }) => {
     try {
+      // 조립은 gongmun-surface SSOT(buildGongmunOptions) — CLI와 의미론 공유 (v4.0.4)
       let gongmun: GongmunOptions | undefined
       if (preset) {
-        gongmun = { preset }
-        if (font) gongmun.bodyFont = font
-        if (body_pt) gongmun.bodyPt = body_pt
-        // cover=false가 최우선(끄기), org/date 지정 시 객체(=켜짐), cover=true는 강제 켜기
-        if (cover === false) gongmun.cover = false
-        else if (org || date) gongmun.cover = { ...(org ? { org } : {}), ...(date ? { date } : {}) }
-        else if (cover === true) gongmun.cover = true
-        if (toc !== undefined) gongmun.toc = toc
-        if (approval && approval.length > 0) gongmun.approval = approval
-        if (page_numbers !== undefined) gongmun.pageNumbers = page_numbers
-        if (end_mark !== undefined) gongmun.endMark = end_mark
-        if (body_title_box !== undefined) gongmun.bodyTitleBox = body_title_box
-        if (h2_marker) gongmun.h2Marker = h2_marker
-        if (fonts) gongmun.fonts = fonts
-        if (sizes) gongmun.sizes = sizes
-        if (bullet2) gongmun.bullet2 = bullet2
-        if (suppress_single !== undefined) gongmun.suppressSingle = suppress_single
-        if (doc_head) gongmun.docHead = doc_head
-        if (doc_foot) gongmun.docFoot = doc_foot
-        if (report_info) gongmun.reportInfo = report_info
-        if (notice_head) gongmun.noticeHead = notice_head
-        if (press) gongmun.press = press
+        gongmun = buildGongmunOptions({
+          preset: PRESET_ALIAS[preset], font, bodyPt: body_pt, lineSpacing: line_spacing,
+          org, date, cover, toc, approval,
+          pageNumbers: page_numbers, endMark: end_mark, bodyTitleBox: body_title_box,
+          h2Marker: h2_marker, fonts, sizes, bullet2, suppressSingle: suppress_single,
+          docHead: doc_head, docFoot: doc_foot, reportInfo: report_info,
+          noticeHead: notice_head, press,
+        })
       }
-      const buf = await markdownToHwpx(markdown, gongmun ? { gongmun } : undefined)
+      // 서식 프로필 (이슈 #41) — 경계 zod 검증 (CLI --profile과 공유 스키마)
+      let profile: import("./hwpx/gen-profile.js").FormatProfile | undefined
+      if (profile_path) {
+        const { parseFormatProfileJson } = await import("./hwpx/profile-io.js")
+        profile = parseFormatProfileJson(readFileSync(resolve(profile_path), "utf-8"))
+      }
+      const buf = await markdownToHwpx(markdown, gongmun || profile ? { ...(gongmun ? { gongmun } : {}), ...(profile ? { profile } : {}) } : undefined)
       const out = resolve(output_path)
       mkdirSync(dirname(out), { recursive: true })
       writeFileSync(out, Buffer.from(buf))
@@ -784,8 +808,9 @@ server.tool(
       const tableCount = (markdown.match(/^\s*\|.*\|\s*$/gm) || []).length > 0
         ? `, 표 포함` : ""
       // 폰트 오버라이드 오타·미설치 경고 (A2) — 생성은 진행, 경고만 병기.
-      // 공문서 모드는 편람 표기법 검수(날짜·시간·금액·붙임 등)도 같은 채널로 병기
+      // 프리셋 비호환 옵션(조용한 폐기)·편람 표기법 검수도 같은 채널로 병기
       const fontWarns = gongmun?.fonts ? unknownFontWarnings(gongmun.fonts) : []
+      if (gongmun) fontWarns.push(...incompatibleGongmunWarnings(gongmun))
       if (gongmun) fontWarns.push(...gongmunLintWarnings(markdown, 5))
       const warnText = fontWarns.length ? `\n⚠ ${fontWarns.join("\n⚠ ")}` : ""
       return {

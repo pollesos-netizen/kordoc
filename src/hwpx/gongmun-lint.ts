@@ -32,7 +32,7 @@ const RULES: LintRule[] = [
   // 날짜 ─ 온점 뒤 한 칸, 0 패딩 금지, 연도 4자리, 끝 마침표
   { code: "DATE_NO_SPACE", severity: "error", pattern: /\b\d{4}\.\d{1,2}\.\d{1,2}\.?/g,
     message: "날짜 온점 뒤에 한 칸씩 띄워야 함", suggest: "예) 2025. 1. 6." },
-  { code: "DATE_ZERO_PAD", severity: "error", pattern: /\b\d{4}\.\s*0\d\.|\.\s*0\d\./g,
+  { code: "DATE_ZERO_PAD", severity: "error", pattern: /\b\d{4}\.\s*0\d\.|\b\d{4}\.\s*\d{1,2}\.\s*0\d/g,
     message: "월·일 앞의 '0'은 표기하지 않음", suggest: "예) 2025. 1. 6. (2025. 01. 06. ✕)" },
   { code: "DATE_2DIGIT_YR", severity: "error", pattern: /(?<!\d)['’]\d{2}\.\s*\d/g,
     message: "연도는 네 자리로 표기('24 ✕)", suggest: "예) 2025. 1. 6." },
@@ -59,7 +59,7 @@ const RULES: LintRule[] = [
   { code: "FOREIGN_FIRST", severity: "warning", pattern: /\b[A-Z]{2,5}\s*\([가-힣]/g,
     message: "한글을 먼저 쓰고 괄호 안에 외국어를 병기", suggest: "예) 업무 협약(MOU)" },
   // 쌍점 — URL(https:// 등)·시각(13:20)은 제외
-  { code: "COLON_SPACE", severity: "warning", pattern: /\S\s+:\S|\S:(?!\/\/)[^\s\d]/g,
+  { code: "COLON_SPACE", severity: "warning", pattern: /\S\s+:(?!\/\/)|\S:(?!\/\/)[^\s\d]/g,
     message: "쌍점은 앞말에 붙이고 뒤는 한 칸 띄움", suggest: "예) 원장: 김갑동" },
 ]
 
@@ -69,12 +69,20 @@ const RULES: LintRule[] = [
  */
 export function lintGongmunText(text: string): GongmunLintFinding[] {
   const findings: GongmunLintFinding[] = []
-  let inFence = false
+  // 펜스는 같은 마커 종류(``` 또는 ~~~)로만 닫힌다 — 다른 마커 줄이 안쪽에 있어도
+  // 조기에 열리거나 닫히지 않게 여는 마커 종류를 기억한다.
+  let fenceMarker: string | null = null
   const lines = text.split(/\r?\n/)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
-    if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue }
-    if (inFence) continue
+    const fence = line.match(/^\s*(```+|~~~+)/)
+    if (fence) {
+      const kind = fence[1][0]
+      if (fenceMarker === null) fenceMarker = kind
+      else if (kind === fenceMarker) fenceMarker = null
+      continue
+    }
+    if (fenceMarker !== null) continue
     for (const r of RULES) {
       r.pattern.lastIndex = 0
       for (const m of line.matchAll(r.pattern)) {

@@ -27,7 +27,7 @@ import { extractHwpxStyles, detectHwpxHeadings } from "./styles.js"
 import { parseSectionXml } from "./section-walker.js"
 import { extractImagesFromZip } from "./images.js"
 import { extractHwpxMetadata } from "./metadata.js"
-import { extractFromBrokenZip, resolveSectionPaths } from "./zip-sections.js"
+import { extractFromBrokenZip, resolveSectionPaths, readKordocLayout } from "./zip-sections.js"
 
 export { extractHwpxMetadataOnly } from "./metadata.js"
 
@@ -88,6 +88,8 @@ export async function parseHwpxDocument(buffer: ArrayBuffer, options?: ParseOpti
   const totalTarget = pageFilter ? pageFilter.size : sectionPaths.length
   const blocks: IRBlock[] = []
   const shared = createSectionShared()
+  // 자사 생성 파일 왕복 채널 게이트 — 인라인 강조 span·인용 복원은 default 레이아웃 한정
+  shared.kordocLayout = await readKordocLayout(zip)
   let parsedSections = 0
   for (let si = 0; si < sectionPaths.length; si++) {
     if (pageFilter && !pageFilter.has(si + 1)) continue

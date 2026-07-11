@@ -44,7 +44,10 @@ function buildTableWithCellMeta(state: TableState): IRTable {
   for (const row of state.rows) {
     for (const src of row as CellCtxEx[]) {
       flatIdx++
-      const needsBlocks = src.hasStructure && src.blocks && src.blocks.length > 0
+      // 구조(중첩표·이미지) 또는 왕복 채널 span 문단(v4.0.4)이 있어야 blocks를 나른다 —
+      // 평문 셀은 text 평탄화로 충분 (blocks 무게 억제)
+      const needsBlocks = !!src.blocks && src.blocks.length > 0
+        && (src.hasStructure || src.blocks.some(b => b.spans))
       if (!needsBlocks && !src.isHeader) continue
 
       // 1순위: cellAddr 절대좌표 (HWPX 표준은 항상 cellAddr 제공)

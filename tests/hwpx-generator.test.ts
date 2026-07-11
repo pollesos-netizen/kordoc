@@ -102,6 +102,65 @@ describe("markdownToHwpx", () => {
     }
   })
 
+  it("인라인 강조·인용 왕복 보존 — run-span 채널 (v4.0.6 회귀)", async () => {
+    const md = "본문 **굵게** *기울임* `코드` ***겹강조***\n\n> 인용문\n"
+    const result = await parse(await markdownToHwpx(md))
+    assert.equal(result.success, true)
+    if (result.success) {
+      assert.ok(result.markdown.includes("**굵게**"), "볼드 마커 재방출")
+      assert.ok(result.markdown.includes("*기울임*"), "이탤릭 마커 재방출")
+      assert.ok(result.markdown.includes("`코드`"), "인라인 코드 마커 재방출")
+      assert.ok(result.markdown.includes("***겹강조***"), "볼드이탤릭 마커 재방출")
+      assert.ok(/^> 인용문$/m.test(result.markdown), "인용 접두 재방출")
+      // 마커가 텍스트를 오염시키지 않음 — 평문화하면 원문과 동일
+      const spans = result.blocks.find(b => b.spans)?.spans
+      assert.ok(spans && spans.length >= 5, "run-span 채널 존재")
+      assert.equal(spans!.map(s => s.text).join(""), "본문 굵게 기울임 코드 겹강조", "span 연결 = 문단 평문")
+    }
+  })
+
+  it("셀 인라인 강조 왕복 — GFM 셀 마커 재방출 (v4.0.4 확장)", async () => {
+    const md = "| 구분 | 내용 |\n|---|---|\n| **강조** | 평문 *기울임* |\n"
+    const result = await parse(await markdownToHwpx(md))
+    assert.equal(result.success, true)
+    if (result.success) {
+      assert.ok(result.markdown.includes("**강조**"), `셀 볼드 마커 재방출: ${result.markdown}`)
+      assert.ok(result.markdown.includes("*기울임*"), "셀 이탤릭 마커 재방출")
+    }
+  })
+
+  it("파서 indent 슬롯 — gongmun 리스트 깊이가 paraPr hc:left로 관찰된다 (v4.0.4)", async () => {
+    const md = "1. 첫 항목\n   가. 둘째 단계 항목\n"
+    const buf = await markdownToHwpx(md, { gongmun: { preset: "기안문" } })
+    const result = await parse(buf)
+    assert.equal(result.success, true)
+    if (result.success) {
+      const first = result.blocks.find(b => (b.text ?? "").includes("첫 항목"))
+      const second = result.blocks.find(b => (b.text ?? "").includes("둘째 단계"))
+      assert.ok(second, "둘째 단계 문단 존재")
+      // depth1(가.)은 hc:left 누적으로 depth0보다 깊다 — 마크다운 방출은 불변(관찰 슬롯)
+      assert.ok((second!.indent ?? 0) > (first?.indent ?? 0),
+        `indent 슬롯: depth1 ${second!.indent} > depth0 ${first?.indent ?? 0}`)
+    }
+  })
+
+  it("외래(비 kordoc) hwpx는 run-span 채널이 꺼진다 — 오검출 가드 (v4.0.6 회귀)", async () => {
+    // generator 산출물에서 content.hpf의 kordoc 메타만 제거해 외래 파일을 모사
+    const JSZip = (await import("jszip")).default
+    const buf = await markdownToHwpx("본문 **굵게**\n\n> 인용문\n")
+    const zip = await JSZip.loadAsync(buf)
+    const hpf = await zip.file("Contents/content.hpf")!.async("string")
+    zip.file("Contents/content.hpf", hpf.replace(/<opf:metadata>[\s\S]*?<\/opf:metadata>\s*/, ""))
+    const foreign = await zip.generateAsync({ type: "arraybuffer" })
+    const result = await parse(foreign)
+    assert.equal(result.success, true)
+    if (result.success) {
+      assert.ok(!result.markdown.includes("**"), "외래 파일엔 강조 마커 미방출")
+      assert.ok(!/^> /m.test(result.markdown), "외래 파일엔 인용 접두 미방출")
+      assert.ok(result.markdown.includes("본문 굵게"), "본문 텍스트는 보존")
+    }
+  })
+
   it("리스트 번호·마커 왕복 보존 (재시작·기호 변형 금지)", async () => {
     const md = "2. 위원별 의결서 각 1부.\n3. 안건심의결과 1부.\n\n- 항목 하나\n* 항목 둘"
     const result = await parse(await markdownToHwpx(md))

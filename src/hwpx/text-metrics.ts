@@ -60,11 +60,32 @@ export function charWidthEm1000(cp: number): number {
 export const SPACE_EM_FIXED = 500
 export const SPACE_EM_FONT = 300
 
+/**
+ * 폭 테이블 클래스 — 'hcr'(함초롬 실측, 기본) / 'fixedPitch'(고정폭 글꼴:
+ * ASCII 0.5em·그 외 1.0em). 굴림체·돋움체·바탕체·궁서체('체' 접미 = 고정폭)가
+ * 대상 — 전자결재 변환기 산출물의 지배 본문 글꼴. 한글이 HCR(0.97em)보다 3%
+ * 넓어 함초롬 테이블로 재면 줄당 1~2자 과대적재로 wrap 지점이 어긋난다
+ * (bench/verify-linebreak.mjs seoul 코퍼스 실측: fixedPitch 테이블로 74/75 일치).
+ */
+export type FaceClass = "hcr" | "fixedPitch"
+
+/** HWP 글꼴명 → 폭 테이블 클래스. 미상/미지정은 hcr (기존 동작 불변) */
+export function faceClassOf(face: string | null | undefined): FaceClass {
+  return face && /^(굴림체|돋움체|바탕체|궁서체)$/.test(face.trim()) ? "fixedPitch" : "hcr"
+}
+
+/** 고정폭 글꼴 advance(em×1000) — ASCII 반각 500, 그 외 전각 1000 */
+function fixedPitchWidthEm1000(cp: number): number {
+  return cp < 0x80 ? 500 : 1000
+}
+
 export interface MeasureOptions {
   /** 공백 폭(em×1000). 기본 SPACE_EM_FIXED(500) = useFontSpace 0 */
   spaceEm?: number
   /** 자간(charPr spacing %) — 글자폭의 %가 문자마다 추가 */
   spacingPct?: number
+  /** 폭 테이블 클래스 — 기본 'hcr' (함초롬 실측 테이블) */
+  faceClass?: FaceClass
 }
 
 /**
@@ -79,10 +100,11 @@ export function measureTextWidth(
 ): number {
   const spaceEm = opts?.spaceEm ?? SPACE_EM_FIXED
   const spacing = opts?.spacingPct ?? 0
+  const widthEm = opts?.faceClass === "fixedPitch" ? fixedPitchWidthEm1000 : charWidthEm1000
   let em = 0
   for (const ch of text) {
     const cp = ch.codePointAt(0)!
-    const w = cp === 0x20 ? spaceEm : charWidthEm1000(cp)
+    const w = cp === 0x20 ? spaceEm : widthEm(cp)
     em += w * (1 + spacing / 100)
   }
   return (em / 1000) * height * (ratioPct / 100)
@@ -139,9 +161,10 @@ export function simulateWrap(
   const EPS = 0.5
   const spaceEm = opts?.spaceEm ?? SPACE_EM_FIXED
   const spacing = opts?.spacingPct ?? 0
+  const widthEm = opts?.faceClass === "fixedPitch" ? fixedPitchWidthEm1000 : charWidthEm1000
   const k = (height * ratioPct) / 100 / 1000
   const cwCp = (cp: number): number =>
-    (cp === 0x20 ? spaceEm : charWidthEm1000(cp)) * (1 + spacing / 100) * k
+    (cp === 0x20 ? spaceEm : widthEm(cp)) * (1 + spacing / 100) * k
   const charW = (ch: string): number => cwCp(ch.codePointAt(0)!)
   const rangeW = (from: number, to: number): number => {
     let w = 0

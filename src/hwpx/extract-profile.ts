@@ -13,7 +13,7 @@
 import JSZip from "jszip"
 import { createXmlParser, findChildByLocalName } from "./parser-shared.js"
 import { toArrayBuffer } from "../utils.js"
-import { normalizeAnchor } from "./gen-profile.js"
+import { normalizeAnchor, normalizeRowAnchor } from "./gen-profile.js"
 import type { FormatProfile, TableProfile, CellProfile, BorderFillDef, BorderDef, CharPrDef } from "./gen-profile.js"
 
 /** localName(접두사 제거)으로 자손 요소 전부 — 문서 순서 보존 */
@@ -57,8 +57,22 @@ function parseBorderFills(headerDoc: Document): Map<string, BorderFillDef> {
   return map
 }
 
+/** header.xml → HANGUL fontface의 font id → 이름 (fontName_hangul 왕복 원료, 0.3.0) */
+function parseHangulFonts(headerDoc: Document): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const ff of elemsByLocal(headerDoc, "fontface")) {
+    if (ff.getAttribute("lang") !== "HANGUL") continue
+    for (const font of elemsByLocal(ff, "font")) {
+      const id = font.getAttribute("id")
+      const face = font.getAttribute("face")
+      if (id && face) map.set(id, face)
+    }
+  }
+  return map
+}
+
 /** header.xml → charPr id → 정의 */
-function parseCharPrs(headerDoc: Document): Map<string, CharPrDef> {
+function parseCharPrs(headerDoc: Document, hangulFonts: Map<string, string>): Map<string, CharPrDef> {
   const map = new Map<string, CharPrDef>()
   for (const cp of elemsByLocal(headerDoc, "charPr")) {
     const id = cp.getAttribute("id")
@@ -73,7 +87,13 @@ function parseCharPrs(headerDoc: Document): Map<string, CharPrDef> {
     if (findChildByLocalName(cp, "underline")) def.underline = true
     const fontRef = findChildByLocalName(cp, "fontRef")
     const hangul = fontRef?.getAttribute("hangul")
-    if (hangul) def.fontRef_hangul = hangul
+    if (hangul) {
+      def.fontRef_hangul = hangul
+      // 순번은 원본 fontfaces에서만 의미가 있다 — 이름을 함께 실어 생성 문서에서
+      // 원본 글꼴 목록 없이도 글꼴이 재현되게 한다 (스키마 0.3.0)
+      const face = hangulFonts.get(hangul)
+      if (face) def.fontName_hangul = face
+    }
     map.set(id, def)
   }
   return map
@@ -111,8 +131,12 @@ function parseTable(
   const cells: CellProfile[] = []
   const usedBf = new Set<string>()
   const usedCp = new Set<string>()
-  // 첫 행 셀 폭으로 col_widths 근사 (span-1 셀만)
-  const colWidths: (string | undefined)[] = new Array(cols).fill(undefined)
+  // 열 너비 — 어느 행이든 span-1 셀이 확정 (그리드 표는 행 무관 동일 열폭),
+  // 남는 열은 병합 셀 폭에서 분배 (행0이 전부 병합이던 표의 col_widths 소실 방지)
+  const colWidths: (number | undefined)[] = new Array(cols).fill(undefined)
+  const spanCells: Array<{ col: number; colSpan: number; w: number }> = []
+  // 첫 행 전체 지문(anchor_row, 0.3.0) — (0,0) 빈 셀 크로스탭 대응
+  const row0Texts = new Map<number, string>()
 
   let anchorText = ""
 
@@ -125,6 +149,7 @@ function parseTable(
     const row = num(addr?.getAttribute("rowAddr")) ?? 0
     const col = num(addr?.getAttribute("colAddr")) ?? 0
     if (row === 0 && col === 0 && !anchorText) anchorText = directCellText(tc)
+    if (row === 0) row0Texts.set(col, directCellText(tc))
     const colSpan = num(span?.getAttribute("colSpan")) ?? 1
     const rowSpan = num(span?.getAttribute("rowSpan")) ?? 1
     const bfId = tc.getAttribute("borderFillIDRef") || undefined
@@ -139,7 +164,21 @@ function parseTable(
     if (cpId) { cell.charPrIDRef = cpId; usedCp.add(cpId) }
     cells.push(cell)
 
-    if (row === 0 && colSpan === 1 && col < cols && w) colWidths[col] = w
+    const wNum = num(w)
+    if (wNum != null && col < cols) {
+      if (colSpan === 1) { if (colWidths[col] == null) colWidths[col] = wNum }
+      else spanCells.push({ col, colSpan, w: wNum })
+    }
+  }
+
+  // 병합 셀 폭 분배 — span-1 셀로 확정 못 한 열만, 알려진 열을 뺀 잔여를 균등 분배
+  for (const s of spanCells) {
+    const covered = Array.from({ length: s.colSpan }, (_, i) => s.col + i).filter(c => c < cols)
+    const unknown = covered.filter(c => colWidths[c] == null)
+    if (unknown.length === 0) continue
+    const known = covered.reduce((sum, c) => sum + (colWidths[c] ?? 0), 0)
+    const each = Math.floor((s.w - known) / unknown.length)
+    if (each > 0) for (const c of unknown) colWidths[c] = each
   }
 
   const table: TableProfile = {
@@ -150,8 +189,10 @@ function parseTable(
   }
   const anchor = normalizeAnchor(anchorText)
   if (anchor) table.anchor_text = anchor
+  const rowAnchor = normalizeRowAnchor(Array.from({ length: cols }, (_, c) => row0Texts.get(c) ?? ""))
+  if (rowAnchor) table.anchor_row = rowAnchor
   if (width) table.width_hwpunit = width
-  if (colWidths.every(w => w != null)) table.col_widths_hwpunit = colWidths as string[]
+  if (colWidths.every(w => w != null)) table.col_widths_hwpunit = colWidths.map(String)
   const cp = pick(charPrs, usedCp)
   if (Object.keys(cp).length) table.used_char_prs = cp
   return table
@@ -223,7 +264,7 @@ export async function hwpxToProfile(input: ArrayBuffer | Buffer): Promise<Format
   if (headerFile) headerXml = await headerFile.async("text")
   const headerDoc = parser.parseFromString(headerXml, "text/xml") as unknown as Document
   const borderFills = parseBorderFills(headerDoc)
-  const charPrs = parseCharPrs(headerDoc)
+  const charPrs = parseCharPrs(headerDoc, parseHangulFonts(headerDoc))
 
   // section*.xml 을 번호 순서로
   const sectionFiles = zip.file(/[Ss]ection\d+\.xml$/)
@@ -239,5 +280,5 @@ export async function hwpxToProfile(input: ArrayBuffer | Buffer): Promise<Format
     }
   }
 
-  return { schema_version: "0.2.0", tables }
+  return { schema_version: "0.3.0", tables }
 }

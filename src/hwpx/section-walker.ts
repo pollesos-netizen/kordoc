@@ -8,7 +8,7 @@
 
 import { KordocError, sanitizeHref, stripDtd } from "../utils.js"
 import { MAX_COLS, MAX_ROWS } from "../table/builder.js"
-import type { IRBlock, IRCell, IRTable, InlineStyle, ParseWarning } from "../types.js"
+import type { IRBlock, IRCell, IRSpan, IRTable, InlineStyle, ParseWarning } from "../types.js"
 import { hmlToLatex } from "./equation.js"
 import {
   clampSpan,
@@ -94,6 +94,19 @@ function walkSection(
 
     switch (localTag) {
       case "tbl": {
+        // kordoc 왕복 채널 (v4.0.5 P2) — 생성기가 heading 의미를 장식표(개조식 표지·
+        // 장헤더·1페이지형 제목박스)에 인코딩할 때 제목 셀 name 속성에 심은 마커.
+        // 마커가 있으면 표 대신 heading으로 복원(h#), 파생물(목차·제목반복)은 스킵해
+        // 재파싱 중복을 막는다. 최상위 표에서만 판독 — 셀 안 중첩표는 일반 표 취급.
+        if (!tableCtx) {
+          const chan = kordocTableChannel(el, ctx)
+          if (chan) {
+            if (chan.kind === "heading" && chan.text) {
+              blocks.push({ type: "heading", level: chan.level, text: chan.text, pageNumber: ctx.sectionNum })
+            }
+            break
+          }
+        }
         if (tableCtx) tableStack.push(tableCtx)
         const newTable: TableState = { rows: [], currentRow: [], cell: null }
         walkSection(el, blocks, newTable, tableStack, ctx, depth + 1)
@@ -160,9 +173,11 @@ function walkSection(
         const { text: rawText, href, footnote, style } = extractParagraphInfo(el, ctx.styleMap, ctx)
         let text = rawText
         let headingLevel: number | undefined
+        // 자동번호/글머리표/개요 접두 재현 (v3.0). 텍스트 유무와 무관하게 호출 —
+        // 한글은 빈 번호 문단도 번호를 소비하므로, 텍스트 있을 때만 advance하면
+        // 빈 문단 이후 항목 전부가 1씩 낮게 재현된다 (v4.0.5 카운터 드리프트)
+        const ph = resolveParaHeading(el, ctx)
         if (text) {
-          // 자동번호/글머리표/개요 접두 재현 (v3.0)
-          const ph = resolveParaHeading(el, ctx)
           if (ph?.prefix) text = ph.prefix + " " + text
           headingLevel = ph?.headingLevel
         }
@@ -171,13 +186,49 @@ function walkSection(
             const cell = tableCtx.cell
             if (footnote) text += ` (주: ${footnote})`
             cell.text += (cell.text ? "\n" : "") + text
-            ;(cell.blocks ??= []).push({ type: "paragraph", text, pageNumber: ctx.sectionNum })
+            const cellBlock: IRBlock = { type: "paragraph", text, pageNumber: ctx.sectionNum }
+            // 왕복 채널 — 셀 문단도 인라인 강조 span 복원 (v4.0.4: 최상위 한정 확장).
+            // GFM 셀 방출이 마커를 재방출하고 generateRuns가 되읽는다
+            if (ctx.shared.kordocLayout === "default" && !ph?.prefix) {
+              const spans = extractRunSpans(el, ctx)
+              if (spans && spans.map(s => s.text).join("").replace(/[ \t]+/g, " ").trim() === text) {
+                cellBlock.spans = spans
+              }
+            }
+            ;(cell.blocks ??= []).push(cellBlock)
           } else if (!tableCtx) {
+            // 구분선 문단('─' 연속 — kordoc 생성기의 hr 렌더) → separator 복원.
+            // 재파싱 시 장식 대시가 본문 텍스트로 남던 왕복 비대칭 수정 (v4.0.5 P2)
+            if (/^─{10,}$/.test(text)) {
+              blocks.push({ type: "separator", pageNumber: ctx.sectionNum })
+              // p 내부 구조 자식 처리 경로 유지를 위해 아래 공통 처리로 진행
+              tableCtx = walkParagraphChildren(el, blocks, tableCtx, tableStack, ctx, depth + 1)
+              break
+            }
             const block: IRBlock = { type: headingLevel ? "heading" : "paragraph", text, pageNumber: ctx.sectionNum }
             if (headingLevel) block.level = headingLevel
             if (style) block.style = style
             if (href) block.href = href
             if (footnote) block.footnoteText = footnote
+            // 들여쓰기 관찰 슬롯 (v4.0.4) — paraPr hc:left + 양수 hc:intent(첫줄).
+            // 마크다운 방출엔 불참 — gongmun 리스트 depth 재유도 등 소비자 몫
+            const ind = ctx.styleMap?.paraIndents.get(el.getAttribute("paraPrIDRef") ?? "")
+            if (ind) {
+              const eff = ind.left + Math.max(0, ind.intent)
+              if (eff > 0) block.indent = eff
+            }
+            // 왕복 채널(자사 생성 default 레이아웃 한정) — 인라인 강조 span·인용 복원
+            if (!headingLevel && ctx.shared.kordocLayout === "default") {
+              if (!ph?.prefix) {
+                const spans = extractRunSpans(el, ctx)
+                // 무결성 가드: span 연결이 블록 텍스트와 일치할 때만 (cleanText 변형과
+                // 어긋난 문단은 평문 유지 — 마커가 본문을 오염시키지 않게)
+                if (spans && spans.map(s => s.text).join("").replace(/[ \t]+/g, " ").trim() === text) {
+                  block.spans = spans
+                }
+              }
+              if (el.getAttribute("paraPrIDRef") === KORDOC_PARA_QUOTE) block.quote = true
+            }
             blocks.push(block)
           } else {
             // 표 내부지만 셀 밖(비정상 경로) — 무음 드롭 대신 본문 문단으로 보존
@@ -278,6 +329,49 @@ function mergeBlocksIntoCell(cell: CellCtxEx, sink: IRBlock[]): void {
   }
 }
 
+/** kordoc 왕복 채널 판독 결과 — heading 복원 또는 파생물 스킵 */
+interface KordocTableChannel {
+  kind: "heading" | "skip"
+  level?: number
+  text?: string
+}
+
+/**
+ * kordoc 생성기의 장식표 왕복 마커 판독 (v4.0.5 P2).
+ * 제목 셀 `name="__kordoc_h1~6"` → heading 복원, `__kordoc_toc`/`__kordoc_skip` →
+ * 파생물(목차·표지 제목 반복)이므로 통째 스킵. 마커 없으면 null(일반 표).
+ */
+function kordocTableChannel(tblEl: Element, ctx: WalkCtx): KordocTableChannel | null {
+  const found = findKordocMarkedCell(tblEl, 0)
+  if (!found) return null
+  const m = found.name.match(/^__kordoc_(?:h([1-6])|(toc|skip))$/)
+  if (!m) return null
+  if (m[2]) return { kind: "skip" }
+  const text = collectSubListText(found.cell, ctx).trim()
+  return { kind: "heading", level: Number(m[1]), text }
+}
+
+/** tbl 하위에서 __kordoc_ 마커 셀 탐색 (중첩표 안까지는 내려가지 않음) */
+function findKordocMarkedCell(el: Node, depth: number): { cell: Element; name: string } | null {
+  if (depth > 6) return null
+  const children = el.childNodes
+  if (!children) return null
+  for (let i = 0; i < children.length; i++) {
+    const ch = children[i] as Element
+    if (ch.nodeType !== 1) continue
+    const tag = (ch.tagName || ch.localName || "").replace(/^[^:]+:/, "")
+    if (tag === "tc") {
+      const name = ch.getAttribute("name") || ""
+      if (name.startsWith("__kordoc_")) return { cell: ch, name }
+      continue // 셀 내부(중첩표)는 탐색하지 않음 — 최상위 표의 셀만
+    }
+    if (tag === "tbl" && depth > 0) continue // 중첩표 진입 금지
+    const found = findKordocMarkedCell(ch, depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
 /** caption/header/footer 등의 subList 내부 문단 텍스트 수집 */
 function collectSubListText(el: Node, ctx: WalkCtx, depth = 0): string {
   if (depth > 10) return ""
@@ -321,6 +415,17 @@ function walkParagraphChildren(
       const localTag = tag.replace(/^[^:]+:/, "")
 
       if (localTag === "tbl") {
+        // kordoc 왕복 채널 (v4.0.5 P2) — walkSection tbl 케이스와 동일 판독.
+        // 최상위(셀 밖) 표에서만: heading 복원 또는 파생물(목차·제목반복) 스킵
+        if (!tableCtx) {
+          const chan = kordocTableChannel(el, ctx)
+          if (chan) {
+            if (chan.kind === "heading" && chan.text) {
+              blocks.push({ type: "heading", level: chan.level, text: chan.text, pageNumber: ctx.sectionNum })
+            }
+            continue
+          }
+        }
         // 테이블은 walkSection으로 위임
         if (tableCtx) tableStack.push(tableCtx)
         const newTable: TableState = { rows: [], currentRow: [], cell: null }
@@ -676,4 +781,65 @@ function extractParagraphInfo(para: Element, styleMap?: HwpxStyleMap, ctx?: Walk
   }
 
   return { text: cleanText, href, footnote, style }
+}
+
+/** kordoc 생성 default 레이아웃의 인라인 코드 charPr id (gen-ids CHAR_CODE와 동기) */
+const KORDOC_CHAR_CODE = "4"
+/** kordoc 생성 default 레이아웃의 인용문 paraPr id (gen-ids PARA_QUOTE와 동기) */
+const KORDOC_PARA_QUOTE = "6"
+
+/**
+ * 문단 직계 run들의 인라인 강조 span 추출 — kordoc 생성 default 레이아웃 파일 한정
+ * (호출부가 shared.kordocLayout === "default"로 게이트). 볼드/이탤릭은 charPr id가
+ * 아니라 styleMap 실속성(<hh:bold/> 등)으로 읽고, 코드만 고정 id로 식별한다.
+ * 개체(표·이미지·수식 등)나 run 외 요소가 섞인 문단, 서식 span이 하나도 없는 문단은
+ * null — 평문 경로 유지 (마커 재방출 이득이 없으면 켜지 않는다).
+ */
+function extractRunSpans(para: Element, ctx: WalkCtx): IRSpan[] | null {
+  const styleMap = ctx.styleMap
+  if (!styleMap) return null
+  const spans: IRSpan[] = []
+  let styled = false
+  const kids = para.childNodes
+  if (!kids) return null
+  for (let i = 0; i < kids.length; i++) {
+    const child = kids[i] as Element
+    if (child.nodeType !== 1) continue
+    const tag = (child.tagName || child.localName || "").replace(/^[^:]+:/, "")
+    if (tag === "linesegarray") continue // 조판 캐시 — 텍스트 무관
+    if (tag !== "run" && tag !== "r") return null
+    let text = ""
+    const rkids = child.childNodes
+    for (let j = 0; j < (rkids?.length ?? 0); j++) {
+      const rc = rkids![j] as Element
+      if (rc.nodeType !== 1) continue
+      const rtag = (rc.tagName || rc.localName || "").replace(/^[^:]+:/, "")
+      if (rtag === "t") {
+        const tkids = rc.childNodes
+        for (let k = 0; k < (tkids?.length ?? 0); k++) {
+          const tk = tkids![k]
+          if (tk.nodeType === 3) text += tk.textContent || ""
+          else if (tk.nodeType === 1) return null // tab/br 등 — 평문 경로
+        }
+      } else if (rtag === "secPr" || rtag === "colPr") {
+        // 첫 run이 나르는 섹션 속성 — 텍스트 무관
+      } else if (rtag === "ctrl") {
+        if (extractTextFromNode(rc)) return null
+      } else {
+        return null // 표·이미지·수식 등 개체 동반 문단
+      }
+    }
+    if (!text) continue
+    const prId = child.getAttribute("charPrIDRef") ?? ""
+    const cp = styleMap.charProperties.get(prId)
+    const span: IRSpan = { text }
+    if (prId === KORDOC_CHAR_CODE) span.code = true
+    else {
+      if (cp?.bold) span.bold = true
+      if (cp?.italic) span.italic = true
+    }
+    if (span.bold || span.italic || span.code) styled = true
+    spans.push(span)
+  }
+  return styled && spans.length > 0 ? spans : null
 }

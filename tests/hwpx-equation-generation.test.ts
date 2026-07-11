@@ -304,3 +304,45 @@ describe("markdownToHwpx equation generation", () => {
     assert.ok(section.includes("<hp:equation"), "수식도 생성됨")
   })
 })
+
+describe("미지원 LaTeX 누출 봉합 (v4.0.6 회귀) — 맨 알파벳 누출 0", () => {
+  it("읽기맵(CONVERT_MAP) 전 단일 명령이 쓰기에서 읽기 어휘 토큰으로 나간다", async () => {
+    const { CONVERT_MAP, MIDDLE_CONVERT_MAP } = await import("../src/hwpx/equation.js")
+    const names = new Set<string>()
+    for (const latex of Object.values(CONVERT_MAP)) {
+      const m = /^\\([A-Za-z]+)$/.exec(latex)
+      if (m) names.add(m[1])
+    }
+    assert.ok(names.size >= 100, `모수 확인: 단일 명령 ${names.size}개`)
+    for (const name of names) {
+      const tok = latexLikeToEqEdit(`\\${name}`).trim()
+      // 구조 분기(sqrt·left 등)가 감싼 출력은 왕복 어서션으로 검증 (아래 케이스들)
+      if (/[{"]/.test(tok)) continue
+      assert.ok(
+        tok in CONVERT_MAP || tok in MIDDLE_CONVERT_MAP,
+        `\\${name} → "${tok}" — 읽기 어휘 밖(맨 알파벳 누출)`,
+      )
+    }
+  })
+
+  it("종전 누출 명령이 정확한 LaTeX로 왕복한다 (실측 목록)", () => {
+    for (const cmd of ["div", "approx", "therefore", "because", "oplus", "uparrow", "propto", "cong", "equiv", "sim", "angle", "mapsto", "ll", "gg", "dagger", "models", "coprod"]) {
+      const back = hmlToLatex(latexLikeToEqEdit(`a \\${cmd} b`)).replace(/\s+/g, " ").trim()
+      assert.equal(back, `a \\${cmd} b`, `\\${cmd} 왕복`)
+    }
+  })
+
+  it("미지원 명령은 맨 알파벳 대신 리터럴 따옴표로 보호 (\\text 되읽기)", () => {
+    assert.equal(latexLikeToEqEdit("\\operatorname{rank} A").trim(), '"operatorname" {rank} A')
+    // EqEdit 함수 키워드는 따옴표 없이 identity 통과 (로만체 함수 렌더 유지)
+    assert.equal(latexLikeToEqEdit("\\sin x").trim(), "sin x")
+  })
+
+  it("cases/vmatrix 환경은 EqEdit 네이티브 토큰 고정점, Bmatrix/align은 내용 보존", () => {
+    const rt = (s: string) => hmlToLatex(latexLikeToEqEdit(s)).replace(/\s+/g, "").trim()
+    assert.equal(rt("\\begin{cases} a & b \\\\ c & d \\end{cases}"), "\\begin{cases}a&b\\\\c&d\\end{cases}")
+    assert.equal(rt("\\begin{vmatrix} a \\\\ b \\end{vmatrix}"), "\\begin{vmatrix}a\\\\b\\end{vmatrix}")
+    assert.equal(rt("\\begin{Bmatrix} a \\\\ b \\end{Bmatrix}"), "\\left\\{\\begin{matrix}a\\\\b\\end{matrix}\\right\\}")
+    assert.ok(rt("\\begin{align} a &= b \\\\ c &= d \\end{align}").includes("eqalign"), "align→eqalign 렌더 보존")
+  })
+})

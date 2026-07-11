@@ -88,15 +88,22 @@ export function buildDocHead(g: ResolvedGongmun, ids: DocframeIds): string[] {
 
 // ─── 기안문 결문 ────────────────────────────────────
 
-/** 결문 구분선 — 서식의 가로줄을 텍스트 룰로 (gonmun.py 준용) */
-const FOOT_SEP = "─".repeat(46)
+/**
+ * 결문 구분선 — 서식의 가로줄을 텍스트 룰로 (gonmun.py 준용). 실측 46자는 기안문 기본
+ * 여백(좌20·우15 → 본문 175mm) 기준 — 커스텀 여백에는 컬럼폭 비례(기본 여백에서 46자
+ * 불변)로 조정한다. 고정 46자면 좁은 컬럼에서 줄바꿈으로 두 줄 룰이 된다 (v4.0.4)
+ */
+function footSep(g: ResolvedGongmun): string {
+  const bodyMm = 210 - g.margins.left - g.margins.right
+  return "─".repeat(Math.max(10, Math.round(bodyMm * (46 / 175))))
+}
 
 export function buildDocFoot(g: ResolvedGongmun, ids: DocframeIds): string[] {
   const f = g.docFoot!
   const out: string[] = [blank()]
   if (f.sender) { out.push(para(f.sender, GONGMUN_CENTER, ids.sender), blank()) }
   const foot = (text: string) => para(text, GONGMUN_TBL_LEFT, ids.foot)
-  out.push(foot(FOOT_SEP))
+  out.push(foot(footSep(g)))
   if (f.drafter || f.reviewer || f.approver)
     out.push(foot(`기안자 ${f.drafter ?? ""}      검토자 ${f.reviewer ?? ""}      결재권자 ${f.approver ?? ""}`))
   if (f.cooperator) out.push(foot(`협조자 ${f.cooperator}`))

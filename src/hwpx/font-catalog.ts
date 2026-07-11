@@ -47,7 +47,7 @@ const COMMON_FREE = [
 
 /** 비교 정규화 — 공백 제거 + 소문자화 ("맑은 고딕"="맑은고딕", "noto sans kr"="Noto Sans KR") */
 function norm(name: string): string {
-  return name.replace(/\s+/g, "").toLowerCase()
+  return name.normalize("NFC").replace(/\s+/g, "").toLowerCase()
 }
 
 const KNOWN = new Set([...HANCOM_BUNDLED, ...WINDOWS_DEFAULT, ...COMMON_FREE].map(norm))

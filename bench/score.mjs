@@ -105,11 +105,18 @@ async function scoreHwpx(file, buf) {
 
   // phantom — 미소비 구간의 "본문 문자"(문자/숫자)만 카운트.
   // 구두점·구분기호(평탄화 ' / ' 등 의도적 아티팩트)는 제외 (whitelist: nested-flatten)
+  // 자동번호 관용: 파서가 의도적으로 실체화한 자동부호("1." "가." "①" 등)는 ref hp:t
+  // 원문에 없어 미소비로 남는다 — ref가 NUMBER/BULLET heading 문단을 실제로 쓴 문서에
+  // 한해, 매칭 소비 구간 직전에 붙은(세그먼트 끝 b가 소비 구간과 인접) 세그먼트 전체가
+  // 자동번호 패턴과 정확 일치하는 ≤3자만 관용. 오염 문자가 섞이면 패턴 불일치로 계상.
+  const AUTONUM_RE = /^(\d{1,2}|[가-힣]|[①-⑳㉑-㉟㊱-㊿])[.)]?$/
+  const hasAutoNumParas = (ref.counters.autoNumHeadingParas ?? 0) > 0
   const unconsumed = cbuf.unconsumed()
   let phantomChars = 0
   const phantomSnips = []
   for (const [a, b] of unconsumed) {
     const seg = mdKey.slice(a, b)
+    if (hasAutoNumParas && b < mdKey.length && AUTONUM_RE.test(seg)) continue
     const content = (seg.match(/[\p{L}\p{N}]/gu) ?? []).length
     phantomChars += content
     if (content >= 4) phantomSnips.push(seg.slice(0, 80))

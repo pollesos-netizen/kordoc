@@ -82,6 +82,9 @@ export type ResolvedTheme = ReturnType<typeof resolveTheme>
 
 export function escapeXml(text: string): string {
   return text
+    // XML 1.0 금지 C0 제어문자 제거(탭 0x09·개행 0x0A·CR 0x0D는 유지) — 옵션 필드(두문·
+    // 결문·결재란 등)에 섞이면 well-formed가 깨져 한컴이 파일을 못 연다
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -123,7 +126,7 @@ export function charPr(
   const boldEl = bold ? `<hh:bold/>` : ""
   // 장평(ratio): 공문서 본문은 95%로 가로 압축 — 한두 글자만 다음 줄로 넘어가는
   // orphan을 줄여 한 줄에 담는다(실제 공문서 관행). 한글·라틴만, 나머지는 100.
-  return `      <hh:charPr id="${id}" height="${height}" textColor="${textColor}" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1"${boldAttr}${italicAttr}>
+  return `      <hh:charPr id="${id}" height="${height}" textColor="${escapeXml(textColor)}" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1"${boldAttr}${italicAttr}>
         <hh:fontRef hangul="${effFont}" latin="${effFont}" hanja="${effFont}" japanese="${effFont}" other="${effFont}" symbol="${effFont}" user="${effFont}"/>
         <hh:ratio hangul="${ratioPct}" latin="${ratioPct}" hanja="${ratioPct}" japanese="100" other="100" symbol="100" user="100"/>
         <hh:spacing hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
@@ -194,7 +197,10 @@ export const GJ_CHAR_BAR = 24          // 표지 장식 바 셀 빈 문단 — 6
 export const GJ_CHAR_BODY_TITLE = 25   // 본문 첫 페이지 제목 박스 — HY헤드라인M 22pt (실측: GT3 표④)
 export const GJ_CHAR_TITLE_BAR = 26    // 1페이지형 제목박스 382HU 바 스페이서 — 1pt
 export const GJ_CHAR_APPROVAL = 27     // 결재란 직위 라벨 — 굴림 계열 10pt
-const GJ_CHAR_COUNT = 17
+// 블록 크기는 첫·끝 명명 id에서 파생 — 수기 카운트 드리프트 방지 (v4.0.5 P0-1).
+// 새 GJ_CHAR_*를 끝에 추가하면 자동 반영되지만, buildCharProperties 방출 행과의
+// 일치는 charVariantBase 런타임 불변식(gen-header)이 검증한다.
+const GJ_CHAR_COUNT = GJ_CHAR_APPROVAL - GJ_CHAR_DAE + 1
 
 // ─── 개조식 전용 paraPr id — 공통(0~7)+단계(8~15)+CENTER(16)+RIGHT(17)+표셀(18·19) 뒤 20~24 ──
 // v4.0.2부터 id 연속성을 위해 전 공문서 프리셋이 이 블록을 방출한다 (비개조식은 20만 사용)
@@ -215,6 +221,12 @@ export const GONGMUN_LIST_PLAIN_BASE = 25
 // 실측 결재선(approval-main): 라벨 lineSp 100%. 1pt 바 스페이서용 GJ_PARA_BAR(70%)를
 // 재사용하면 긴 라벨 줄바꿈 시 줄이 겹친다 — 보이는 텍스트는 전용 100% paraPr로.
 export const GONGMUN_PARA_APPROVAL = GONGMUN_LIST_PLAIN_BASE + GONGMUN_LIST_LEVELS
+
+// ─── (depth, 부호폭) 내어쓰기 변형 paraPr — 34~ (v4.0.5 P1-1) ──
+// 법정 번호 두 자리 이상('10.'·'10)'·'(10)') 항목 전용 — depth 공용 paraPr의 대표
+// 부호('1.') 내어쓰기로는 둘째 줄이 내용 첫 글자보다 ~0.55타 왼쪽으로 어긋난다.
+// 문서에 해당 항목이 있을 때만 발급(gongmunList.indentVariants — 기본 산출물 불변)
+export const GONGMUN_LIST_VARIANT_BASE = GONGMUN_PARA_APPROVAL + 1
 
 // ─── 개조식 전용 borderFill id — 기본 2종(1·2) 뒤 3~9 ──
 export const GJ_BF_CHAPTER_NUM = 3   // 장헤더 로마숫자 셀 — #193AAA 음영 + #006699 테두리
@@ -298,10 +310,13 @@ export const GONGMUN_APPROVAL_CHAR = 14
 // 비공문서는 11부터(종전과 동일). 비실측 공문서는 표 셀 2종(11·12)이 먼저 와 13부터.
 // 실측 폰트 프리셋(개조식·보고서·계획서)은 전용 charPr 15종(11~25)이 먼저 오므로 26부터.
 // 변형 vi번째 장평 r → charPr id = charVariantBase + vi×4 + (0 본문|1 볼드|2 이탤릭|3 볼드이탤릭)
-export const CHAR_VARIANT_BASE = 11
+export const CHAR_VARIANT_BASE = CHAR_QUOTE + 1
 export function charVariantBase(richAssets: boolean, isGongmun: boolean = true): number {
   if (!isGongmun) return CHAR_VARIANT_BASE
-  return richAssets ? 11 + GJ_CHAR_COUNT : 11 + 4
+  // 비실측 공문서 전용 블록(표 셀 2 + 제목바 + 결재란) 크기도 명명 상수에서 파생
+  return richAssets
+    ? CHAR_VARIANT_BASE + GJ_CHAR_COUNT
+    : CHAR_VARIANT_BASE + (GONGMUN_APPROVAL_CHAR - GONGMUN_TBL_CHAR + 1)
 }
 /** 공문서 본문 기본 장평(%) — 실제 공문서 관행 (v3.5.3) */
 export const GONGMUN_BODY_RATIO = 95

@@ -14,6 +14,7 @@
  */
 
 import { markerWidth } from "./gongmun.js"
+import { BODY_WIDTH_20MM, COVER_MEASURED_W } from "./geometry.js"
 
 // ─── 부호 ───────────────────────────────────────────
 
@@ -119,7 +120,14 @@ export function formatGaejosikDate(d: Date): string {
  * 자체 부여하므로 이중 번호 방지 (헤딩 자동번호 함정의 개조식 해법).
  */
 export function stripChapterNumber(title: string): string {
-  return title.replace(/^\s*(?:\d+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)\s*[.)]\s*/u, "").trim()
+  // 로마숫자는 Ⅰ~Ⅻ(U+2160~216B, chapterRoman 생성 범위) 전체. 소절형 선번호("1.5.")는
+  // 한 덩어리로 보아 뒤에 마침표가 있을 때만 제거 — "1.5 개요"가 "5 개요"로 잘리지 않게.
+  // h2 말머리 문자(□·○·ㅇ·-·ㆍ)도 함께 벗긴다 (v4.0.5 P2) — box 모드 왕복 시
+  // '□ 제목'이 '□ □ 제목'으로 단조 누적되던 비가역 열화 방지 (idempotency).
+  return title
+    .replace(/^\s*[□○ㅇㆍ-]\s+/u, "")
+    .replace(/^\s*(?:\d+(?:\.\d+)*|[Ⅰ-Ⅻ]+)\s*[.)]\s*/u, "")
+    .trim()
 }
 
 // ─── 실측 색상/기하 상수 (gen-gaejosik XML 조립용) ────
@@ -141,12 +149,18 @@ export const GAEJOSIK_COLORS = {
   tocStripe: "#E0E5FA",
 } as const
 
-/** 장헤더 표 기하(HWPUNIT, 여백 20mm A4 본문폭 48188 기준 실측) */
+/** 실측 개조식 장식표 기하의 기준 본문폭(HWPUNIT) — 여백 좌우 20mm A4(mmToHwpunit(170)=48189).
+ *  margins 오버라이드로 본문폭이 달라지면 이 값 대비 비율로 표 폭을 스케일해 페이지 밖 넘침 방지.
+ *  정의는 geometry.ts SSOT (v4.0.5 P0-3) */
+export const GAEJOSIK_BASE_WIDTH = BODY_WIDTH_20MM
+
+/** 장헤더 표 기하(HWPUNIT, 여백 20mm A4 본문폭 48189 기준 실측) */
 export const CHAPTER_GEOM = { numW: 3327, gapW: 848, titleW: 43513, rowH: 2832 } as const
 
-/** 표지 장식 바 기하 — 상단(긴 진파랑+짧은 연파랑), 제목 칸, 하단(짧은 진파랑+긴 연파랑) */
+/** 표지 장식 바 기하 — 상단(긴 진파랑+짧은 연파랑), 제목 칸, 하단(짧은 진파랑+긴 연파랑).
+ *  totalW는 계산 본문폭(48189)이 아닌 실물 저장값 48180 — geometry.ts COVER_MEASURED_W 주석 참조 */
 export const COVER_GEOM = {
-  totalW: 48180,
+  totalW: COVER_MEASURED_W,
   topDarkW: 38219, topLightW: 9961, barH: 818,
   titleH: 11060,
   botDarkW: 10466, botLightW: 37714, botBarH: 812,
@@ -160,15 +174,30 @@ export const TOC_GEOM = { boxW: 46492, boxH: 57840 } as const
 // 목차 배너 3931@28pt. 폭은 본문폭 고정(스케일 제외), 높이만 요소 크기에 비례.
 
 /** 장헤더 기하 — rowH를 chapter 크기(기본 17pt)에 비례 */
-export function chapterGeom(bodyHeight: number, ov: GaejosikSizeOverrides = {}) {
+export function chapterGeom(bodyHeight: number, ov: GaejosikSizeOverrides = {}, bodyWidth: number = GAEJOSIK_BASE_WIDTH) {
   const s = gaejosikSizes(bodyHeight, ov).chapter / 1700
-  return { ...CHAPTER_GEOM, rowH: Math.round(CHAPTER_GEOM.rowH * s) }
+  const ws = bodyWidth / GAEJOSIK_BASE_WIDTH
+  const numW = Math.round(CHAPTER_GEOM.numW * ws)
+  const gapW = Math.round(CHAPTER_GEOM.gapW * ws)
+  // 제목 열이 잔여를 흡수 — 세 열 합이 본문폭 비례를 정확히 유지
+  const titleW = Math.round((CHAPTER_GEOM.numW + CHAPTER_GEOM.gapW + CHAPTER_GEOM.titleW) * ws) - numW - gapW
+  return { numW, gapW, titleW, rowH: Math.round(CHAPTER_GEOM.rowH * s) }
 }
 
 /** 표지 기하 — 제목칸 높이를 coverTitle 크기(기본 30pt)에 비례. 장식 바 높이는 고정 */
-export function coverGeom(bodyHeight: number, ov: GaejosikSizeOverrides = {}) {
+export function coverGeom(bodyHeight: number, ov: GaejosikSizeOverrides = {}, bodyWidth: number = GAEJOSIK_BASE_WIDTH) {
   const s = gaejosikSizes(bodyHeight, ov).coverTitle / 3000
-  return { ...COVER_GEOM, titleH: Math.round(COVER_GEOM.titleH * s) }
+  // 폭은 본문폭 비례 스케일(잔여 열은 totalW에서 빼 정합 유지), 높이(titleH)는 크기 비례.
+  // 기본 여백이면 bodyWidth=기준폭이라 scale=1 → 실측값 그대로(회귀 없음).
+  const w = (v: number) => Math.round((v * bodyWidth) / GAEJOSIK_BASE_WIDTH)
+  const totalW = w(COVER_GEOM.totalW)
+  return {
+    ...COVER_GEOM,
+    totalW,
+    topDarkW: w(COVER_GEOM.topDarkW), topLightW: totalW - w(COVER_GEOM.topDarkW),
+    botDarkW: w(COVER_GEOM.botDarkW), botLightW: totalW - w(COVER_GEOM.botDarkW),
+    titleH: Math.round(COVER_GEOM.titleH * s),
+  }
 }
 
 // ─── 목차 장식 배너 (B7) — 실측: GT3 「2_보고서 양식」 표② 1×7 스트라이프 ──

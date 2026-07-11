@@ -195,7 +195,7 @@ describe("차트 마크다운 파싱 회귀 (chart-2/3/6/7)", () => {
   it("chart-2: 기안문 항목 사이 차트가 번호 run 을 끊지 않는다", () => {
     const blocks = parseMarkdownToBlocks("1. 첫째 항목\n\n```chart\ncat: a, b\n예산: 10, 20\n```\n\n2. 둘째 항목")
     const g = resolveGongmun({ preset: "기안문" })
-    const map = precomputeGongmunList(blocks, g)
+    const map = precomputeGongmunList(blocks, g).items
     const markers = blocks.map((b, i) => (b.type === "list_item" ? map.get(i)?.marker : null)).filter((m): m is string => !!m)
     assert.equal(markers.length, 2, "두 항목 모두 번호 부여(소멸 없음)")
     assert.ok(markers[0].includes("1"), `첫째 항목 1번 (실제: ${markers[0]})`)

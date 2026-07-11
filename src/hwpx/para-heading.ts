@@ -4,10 +4,10 @@
  */
 
 import type { WalkCtx } from "./parser-shared.js"
+import { hangulOrdinal, circledNumber, circledHangul } from "./gongmun.js"
 
 // ─── 자동번호 포맷 ───────────────────────────────────
 
-const HANGUL_SYLLABLE_SEQ = "가나다라마바사아자차카타파하"
 const HANGUL_JAMO_SEQ = "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ"
 
 /** 1-based 숫자 → 로마 숫자 (대문자) */
@@ -27,9 +27,11 @@ function formatHeadNumber(n: number, numFormat: string): string {
   if (n <= 0) n = 1
   switch (numFormat) {
     case "DIGIT": return String(n)
-    case "CIRCLED_DIGIT": return n <= 20 ? String.fromCodePoint(0x2460 + n - 1) : `(${n})`
-    case "HANGUL_SYLLABLE": return HANGUL_SYLLABLE_SEQ[(n - 1) % HANGUL_SYLLABLE_SEQ.length]
-    case "CIRCLED_HANGUL_SYLLABLE": return n <= 14 ? String.fromCodePoint(0x326e + n - 1) : HANGUL_SYLLABLE_SEQ[(n - 1) % 14]
+    // 서수 시퀀스는 생성기(gongmun.ts)와 단일 소스 (v4.0.5) — 종전 mod-14 순환은
+    // 15번째 형제를 다시 '가'로 만들어 한글 실렌더(가→하→거→너 단모음 연속)와 어긋났다
+    case "CIRCLED_DIGIT": return n <= 50 ? circledNumber(n - 1) : `(${n})`
+    case "HANGUL_SYLLABLE": return hangulOrdinal(n - 1)
+    case "CIRCLED_HANGUL_SYLLABLE": return n <= 14 ? circledHangul(n - 1) : hangulOrdinal(n - 1)
     case "HANGUL_JAMO": return HANGUL_JAMO_SEQ[(n - 1) % HANGUL_JAMO_SEQ.length]
     case "CIRCLED_HANGUL_JAMO": return n <= 14 ? String.fromCodePoint(0x3260 + n - 1) : HANGUL_JAMO_SEQ[(n - 1) % 14]
     case "LATIN_CAPITAL": return String.fromCharCode(0x41 + ((n - 1) % 26))
@@ -53,8 +55,9 @@ export interface ResolvedParaHeading {
 /**
  * hp:p paraPrIDRef → paraPr heading(NUMBER/BULLET/OUTLINE) 해석.
  * NUMBER/OUTLINE은 7수준 카운터 상태기계 사용 — 같은 numbering id에서
- * 레벨별 카운터 증가, 상위 레벨 증가 시 하위 리셋. 호출 시 카운터가
- * 증가하므로 텍스트가 있는 문단에서만 호출할 것.
+ * 레벨별 카운터 증가, 상위 레벨 증가 시 하위 리셋. 한글은 빈 번호 문단도
+ * 번호를 소비하므로 텍스트 없는 문단에서도 호출해 카운터를 진행시킨다
+ * (v4.0.5 — 접두는 호출부가 텍스트 있을 때만 사용).
  */
 export function resolveParaHeading(paraEl: Element, ctx: WalkCtx): ResolvedParaHeading | null {
   const sm = ctx.styleMap

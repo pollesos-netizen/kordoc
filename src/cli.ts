@@ -3,8 +3,11 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "fs"
 import { basename, dirname, resolve, extname } from "path"
 import { Command } from "commander"
-import { parse, detectFormat, detectZipFormat, fillFormFields, extractFormFields, blocksToMarkdown, markdownToHwpx, fillHwpx, PRESET_ALIAS, unknownFontWarnings, lintGongmunText, gongmunLintWarnings } from "./index.js"
+import { parse, detectFormat, detectZipFormat, fillFormFields, extractFormFields, blocksToMarkdown, markdownToHwpx, fillHwpx, hwpxToProfile, PRESET_ALIAS, unknownFontWarnings, incompatibleGongmunWarnings, lintGongmunText, gongmunLintWarnings } from "./index.js"
+import { parseFormatProfileJson } from "./hwpx/profile-io.js"
+import { buildGongmunOptions, BODY_FONTS, H2_MARKERS, BULLET2_CHARS } from "./hwpx/gongmun-surface.js"
 import type { ParseOptions } from "./types.js"
+import type { FormatProfile } from "./hwpx/gen-profile.js"
 import { VERSION, toArrayBuffer, sanitizeError } from "./utils.js"
 
 const program = new Command()
@@ -344,7 +347,16 @@ program
       }
       const image = new Uint8Array(readFileSync(imgPath))
       const ext = extname(opts.image).slice(1).toLowerCase() || "png"
-      // --size-mm 검증 — 비숫자·음수가 NaN/음수로 XML 속성에 그대로 기록되던 것 차단 (MCP zod 동등)
+      // 숫자 플래그 엄격 검증 — 비숫자가 NaN→0 무증상 강제, 음수 occurrence가 truthy로
+      // 통과하던 것 차단 (MCP zod와 동등, v4.0.6: --size-mm만 검증하던 것을 전 숫자 플래그로)
+      const parseNum = (flag: string, raw: unknown, { min, allowNeg = false }: { min?: number; allowNeg?: boolean } = {}): number => {
+        const n = Number(raw)
+        if (!Number.isFinite(n) || (!allowNeg && n < 0) || (min !== undefined && n < min)) {
+          process.stderr.write(`[kordoc] ${flag} 값이 잘못됐습니다: ${raw}${allowNeg ? "" : " (0 이상 숫자)"}\n`)
+          process.exit(1)
+        }
+        return n
+      }
       let sizeMm: number | undefined
       if (opts.sizeMm != null) {
         const n = Number(opts.sizeMm)
@@ -358,13 +370,13 @@ program
         buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
         [{
           anchor: opts.anchor,
-          occurrence: Number(opts.occurrence) || 0,
+          occurrence: parseNum("--occurrence", opts.occurrence),
           image,
           ext: ext as "png" | "jpg" | "jpeg" | "bmp" | "gif",
           sizeMm,
           mode: mode as "overlap" | "right" | "auto",
-          dxMm: Number(opts.dx) || 0,
-          dyMm: Number(opts.dy) || 0,
+          dxMm: parseNum("--dx", opts.dx, { allowNeg: true }),
+          dyMm: parseNum("--dy", opts.dy, { allowNeg: true }),
         }],
       )
       const outPath = resolve(output ?? file.replace(/\.hwpx$/i, "") + ".sealed.hwpx")
@@ -470,6 +482,7 @@ program
   .option("--font <type>", "본문 글꼴: myeongjo(함초롬바탕) 또는 gothic(맑은 고딕)")
   .option("--pt <size>", "본문 글자 크기(pt)")
   .option("--line-spacing <percent>", "본문 줄간격(%)")
+  .option("--profile <path>", "서식 프로필 JSON (kordoc profile로 추출) — 참조 문서의 표 테두리·음영·열폭·셀 글꼴 재현")
   .option("--org <name>", "표지 기관명 (표지를 켜는 프리셋 공통)")
   .option("--date <date>", "표지 날짜 (기본 오늘 — 'YYYY. M. D.')")
   .option("--toc", "목차 페이지 강제 켜기 (개조식 외 프리셋에서도 h2 목록으로 생성)")
@@ -512,7 +525,8 @@ program
         baseName = basename(inPath).replace(/\.(md|markdown|txt)$/i, "")
       }
 
-      // 공문서 옵션 구성
+      // 공문서 옵션 구성 — 값 검증(열거)과 조립은 gongmun-surface SSOT, 여기는
+      // commander 표면 사정(kv 파싱·--no-x 기본값)을 중립 입력으로 정돈하는 어댑터만
       let gongmun: import("./index.js").GongmunOptions | undefined
       if (!opts.plain) {
         const preset = PRESET_ALIAS[String(opts.preset).trim()]
@@ -520,80 +534,89 @@ program
           process.stderr.write(`[kordoc] 알 수 없는 프리셋: ${opts.preset} (기안문/보고서/계획서/통지/회의록/개조식/보도자료)\n`)
           process.exit(1)
         }
-        gongmun = { preset }
-        // 표지: --no-cover가 최우선, org/date 지정 시 객체(=켜짐), --cover는 강제 켜기.
-        // 미지정이면 프리셋 기본(개조식만 켜짐 — resolveGongmun)
-        if (opts.cover === false) {
-          gongmun.cover = false
-        } else if (opts.org || opts.date) {
-          gongmun.cover = { ...(opts.org ? { org: opts.org } : {}), ...(opts.date ? { date: opts.date } : {}) }
-        } else if (opts.cover === true) {
-          gongmun.cover = true
-        }
-        // 목차: --toc/--no-toc 명시 시에만 전달 (미지정이면 프리셋 기본)
-        if (opts.toc !== undefined) gongmun.toc = opts.toc
-        if (opts.approval) gongmun.approval = String(opts.approval).split(",").map((s: string) => s.trim()).filter(Boolean)
-        if (opts.pageNumbers !== undefined) gongmun.pageNumbers = opts.pageNumbers
-        if (opts.endMark !== undefined) gongmun.endMark = opts.endMark
-        if (opts.bodyTitleBox === false) gongmun.bodyTitleBox = false
-        if (opts.h2Marker) {
-          if (!["box", "number", "none"].includes(opts.h2Marker)) {
-            process.stderr.write(`[kordoc] --h2-marker 는 box/number/none\n`)
+        const enumCheck = <T extends readonly string[]>(flag: string, value: unknown, allowed: T): (typeof allowed)[number] | undefined => {
+          if (value === undefined) return undefined
+          if (!allowed.includes(String(value))) {
+            process.stderr.write(`[kordoc] ${flag} 는 ${allowed.join("/")}\n`)
             process.exit(1)
           }
-          gongmun.h2Marker = opts.h2Marker
+          return value as (typeof allowed)[number]
         }
-        if (opts.font) {
-          if (opts.font !== "myeongjo" && opts.font !== "gothic") {
-            process.stderr.write(`[kordoc] --font 은 myeongjo 또는 gothic\n`)
-            process.exit(1)
+        // "key=value,key=value" 스펙 파싱 — 값의 '='는 보존(첫 '='만 분리). 쉼표는
+        // 구분자라 값에 못 들어감 — '=' 없는 조각(잘린 값의 꼬리 등)은 무증상 드랍
+        // 대신 경고로 노출 (v4.0.6: 두문 title 값 유실이 조용히 지나가던 것 봉합)
+        const parseKv = (spec: string, flag: string): Record<string, string> => {
+          const out: Record<string, string> = {}
+          for (const piece of spec.split(",")) {
+            const p = piece.trim()
+            if (!p) continue
+            const eq = p.indexOf("=")
+            const key = eq > 0 ? p.slice(0, eq).trim() : ""
+            const value = eq > 0 ? p.slice(eq + 1).trim() : ""
+            if (!key || !value) {
+              process.stderr.write(`[kordoc] ${flag}: 'key=value' 형식이 아닌 조각 무시 — "${p}" (값에 쉼표는 쓸 수 없습니다)\n`)
+              continue
+            }
+            out[key] = value
           }
-          gongmun.bodyFont = opts.font
+          return out
         }
-        if (opts.pt) gongmun.bodyPt = Number(opts.pt)
-        if (opts.lineSpacing) gongmun.lineSpacing = Number(opts.lineSpacing)
-        // "key=value,key=value" 스펙 파싱 — 값에 쉼표가 없는 폰트명·숫자만 지원
-        const parseKv = (spec: string): Record<string, string> =>
-          Object.fromEntries(spec.split(",").map((p) => p.split("=").map((s) => s.trim())).filter((kv) => kv.length === 2 && kv[0] && kv[1]))
-        if (opts.fonts) gongmun.fonts = parseKv(String(opts.fonts))
-        if (opts.sizes) {
-          gongmun.sizes = Object.fromEntries(
-            Object.entries(parseKv(String(opts.sizes))).map(([k, v]) => [k, Number(v)]).filter(([, v]) => Number.isFinite(v as number)),
-          )
-        }
-        // v4.1.0 — 두문·결문·보고정보·공고두문·보도머리 (GAP-02/03/04/06/08)
-        if (opts.bullet2) {
-          if (opts.bullet2 !== "ㅇ" && opts.bullet2 !== "○") {
-            process.stderr.write(`[kordoc] --bullet2 는 ㅇ 또는 ○\n`)
-            process.exit(1)
-          }
-          gongmun.bullet2 = opts.bullet2
-        }
-        if (opts.suppressSingle) gongmun.suppressSingle = true
-        if (opts.docHead) gongmun.docHead = parseKv(String(opts.docHead))
-        if (opts.docFoot) gongmun.docFoot = parseKv(String(opts.docFoot))
-        if (opts.reportInfo) gongmun.reportInfo = String(opts.reportInfo)
-        if (opts.noticeHead) gongmun.noticeHead = parseKv(String(opts.noticeHead))
-        if (opts.pressHead || opts.pressSub) {
-          const kv = opts.pressHead ? parseKv(String(opts.pressHead)) : {}
-          gongmun.press = {
-            release: kv.release, distribute: kv.distribute,
-            sub: opts.pressSub ? String(opts.pressSub).split(";").map((s: string) => s.trim()).filter(Boolean) : undefined,
-            contact: kv.dept || kv.manager || kv.phone ? { dept: kv.dept, manager: kv.manager, phone: kv.phone } : undefined,
-          }
-        }
+        const pressKv = opts.pressHead ? parseKv(String(opts.pressHead), "--press-head") : {}
+        gongmun = buildGongmunOptions({
+          preset,
+          font: enumCheck("--font", opts.font, BODY_FONTS),
+          bodyPt: opts.pt ? Number(opts.pt) : undefined,
+          lineSpacing: opts.lineSpacing ? Number(opts.lineSpacing) : undefined,
+          org: opts.org, date: opts.date,
+          cover: opts.cover, toc: opts.toc,
+          approval: opts.approval ? String(opts.approval).split(",").map((s: string) => s.trim()).filter(Boolean) : undefined,
+          pageNumbers: opts.pageNumbers, endMark: opts.endMark,
+          // --no-body-title-box 단독 플래그 — commander 기본 true는 "미지정"으로 정돈
+          bodyTitleBox: opts.bodyTitleBox === false ? false : undefined,
+          h2Marker: enumCheck("--h2-marker", opts.h2Marker, H2_MARKERS),
+          fonts: opts.fonts ? parseKv(String(opts.fonts), "--fonts") : undefined,
+          sizes: opts.sizes
+            ? Object.fromEntries(
+              Object.entries(parseKv(String(opts.sizes), "--sizes")).map(([k, v]) => [k, Number(v)]).filter(([, v]) => Number.isFinite(v as number)),
+            )
+            : undefined,
+          bullet2: enumCheck("--bullet2", opts.bullet2, BULLET2_CHARS),
+          suppressSingle: opts.suppressSingle ? true : undefined,
+          docHead: opts.docHead ? parseKv(String(opts.docHead), "--doc-head") : undefined,
+          docFoot: opts.docFoot ? parseKv(String(opts.docFoot), "--doc-foot") : undefined,
+          reportInfo: opts.reportInfo ? String(opts.reportInfo) : undefined,
+          noticeHead: opts.noticeHead ? parseKv(String(opts.noticeHead), "--notice-head") : undefined,
+          press: opts.pressHead || opts.pressSub
+            ? {
+              release: pressKv.release, distribute: pressKv.distribute,
+              sub: opts.pressSub ? String(opts.pressSub).split(";").map((s: string) => s.trim()).filter(Boolean) : undefined,
+              contact: pressKv.dept || pressKv.manager || pressKv.phone ? { dept: pressKv.dept, manager: pressKv.manager, phone: pressKv.phone } : undefined,
+            }
+            : undefined,
+        })
       }
 
       // 폰트 오버라이드 오타·미설치 경고 (A2) — 생성은 진행
       if (gongmun?.fonts && !silent) {
         for (const w of unknownFontWarnings(gongmun.fonts)) process.stderr.write(`[kordoc] ${w}\n`)
       }
+      // 프리셋 비호환 옵션 경고 (v4.0.6) — 조용한 폐기 대신 노출, 생성은 진행
+      if (gongmun && !silent) {
+        for (const w of incompatibleGongmunWarnings(gongmun)) process.stderr.write(`[kordoc] ⚠ ${w}\n`)
+      }
       // 공문서 표기법 검수 (편람 기준, 조언용) — 생성은 진행, stderr 경고만
       if (gongmun && !silent) {
         for (const w of gongmunLintWarnings(md, 5)) process.stderr.write(`[kordoc] ⚠ ${w}\n`)
       }
 
-      const buf = await markdownToHwpx(md, gongmun ? { gongmun } : undefined)
+      // 서식 프로필 (이슈 #41) — 경계 zod 검증 후 라이브러리에 전달 (MCP와 공유 스키마)
+      let profile: FormatProfile | undefined
+      if (opts.profile) {
+        profile = parseFormatProfileJson(readFileSync(resolve(String(opts.profile)), "utf-8"))
+        if (!silent) process.stderr.write(`[kordoc] 서식 프로필 적용: 표 ${profile.tables.length}개 (${opts.profile})\n`)
+      }
+
+      const buf = await markdownToHwpx(md, gongmun || profile ? { ...(gongmun ? { gongmun } : {}), ...(profile ? { profile } : {}) } : undefined)
       const outPath = resolve(output ?? (markdown === "-" ? `${baseName}.hwpx` : markdown.replace(/\.(md|markdown|txt)$/i, "") + ".hwpx"))
       mkdirSync(dirname(outPath), { recursive: true })
       writeFileSync(outPath, Buffer.from(buf))
@@ -602,6 +625,28 @@ program
         const mode = gongmun ? `공문서:${gongmun.preset}` : "범용"
         process.stderr.write(`[kordoc] HWPX 생성 (${mode}) → ${outPath}\n`)
       }
+    } catch (err) {
+      process.stderr.write(`[kordoc] 오류: ${sanitizeError(err)}\n`)
+      process.exit(1)
+    }
+  })
+
+program
+  .command("profile <file>")
+  .description("HWPX 표 서식 프로필 추출 — 참조 문서의 표 테두리·음영·열폭·셀 글꼴을 JSON으로 (generate --profile로 재현) — kordoc profile 참조.hwpx -o 서식.json")
+  .option("-o, --output <path>", "출력 JSON 경로 (기본: <입력>.profile.json)")
+  .option("--silent", "진행 메시지 숨기기")
+  .action(async (file: string, opts) => {
+    try {
+      const rootOpts = program.opts()
+      const output: string | undefined = opts.output ?? rootOpts.output
+      const silent: boolean = opts.silent ?? rootOpts.silent
+      const absPath = resolve(file)
+      const profile = await hwpxToProfile(readFileSync(absPath))
+      const outPath = resolve(output ?? absPath.replace(/\.hwpx$/i, "") + ".profile.json")
+      mkdirSync(dirname(outPath), { recursive: true })
+      writeFileSync(outPath, JSON.stringify(profile, null, 2))
+      if (!silent) process.stderr.write(`[kordoc] 서식 프로필 추출: 표 ${profile.tables.length}개 → ${outPath}\n`)
     } catch (err) {
       process.stderr.write(`[kordoc] 오류: ${sanitizeError(err)}\n`)
       process.exit(1)

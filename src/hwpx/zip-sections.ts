@@ -89,6 +89,22 @@ export function extractFromBrokenZip(buffer: ArrayBuffer): InternalParseResult {
 
 // ─── Manifest 해석 ───────────────────────────────────
 
+/**
+ * content.hpf의 kordoc 생성자 마커 판독 — 왕복 채널(자사 파일 한정 복원)의 게이트.
+ * generator가 아닌 파일(한컴 산출물 등)은 null → id 기반 인라인 강조·인용 복원 꺼짐.
+ */
+export async function readKordocLayout(zip: JSZip): Promise<string | null> {
+  const file = zip.file("Contents/content.hpf") ?? zip.file("content.hpf")
+  if (!file) return null
+  try {
+    const xml = await file.async("text")
+    if (!/<opf:meta\b[^>]*name="generator"[^>]*content="kordoc"/.test(xml)) return null
+    return xml.match(/<opf:meta\b[^>]*name="kordoc-layout"[^>]*content="([^"]*)"/)?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function resolveSectionPaths(zip: JSZip): Promise<string[]> {
   const manifestPaths = ["Contents/content.hpf", "content.hpf"]
   for (const mp of manifestPaths) {

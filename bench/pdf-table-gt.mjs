@@ -6,8 +6,23 @@
 // 주의: pdf는 페이지 단위로 표가 쪼개지고(분할표 병합 보정이 일부 흡수) 병합·머리글
 // 표현이 hwpx와 다를 수 있어 만점이 목표가 아니다 — 무후퇴 플로어 감시.
 //
-// 기준선 (2026-07-03 10차: 강등 라벨헤더 가드 + 체인 뷰 합성 + 매칭 3픽스 + 모수
-// 예외, 2회 동일): ref 표 69 | 매칭 0.985507 | exact 0.652174 | cellF1 0.724023 |
+// 기준선 (2026-07-11 11차: 적층 표 분리 — 경계선 공유 스트립+본표 절단 + 밴드별
+// vertex 재계산): ref 표 69 | 매칭 0.985507 | exact 0.652174 | cellF1 0.727382 |
+// cellExact 0.727941 | contentNED 0.530784
+// (11차 개선: 채용공고 머리 스트립(업무명·직종 1행 표)이 응시원서 본표와 경계
+//  수평선을 공유해 Union-Find가 22x10류 프랑켄 그리드로 묶던 것을, 컷 라인
+//  판정(전폭 수평선 + 관통 논리 수직선 0 + 양쪽 독립 수직선 2+ + 내부 x-집합
+//  비겹침)으로 절단 — pair05·07·08 응시원서 행 정렬 복구(cellExact +3.0pp).
+//  관통 판정은 체인 뷰(맞닿은 세그먼트를 논리 수직선으로) — nrich 지원서처럼
+//  외곽선을 섹션별 세그먼트로 그린 단일 표(gap 0 맞닿음)는 절단하지 않고, 별개
+//  표 사이 실간격(실측 2.9pt+)만 가른다. 분리 밴드는 vertex를 자기 선으로 재계산
+//  (공유 경계선 위 교차점이 반대편 표의 수직선 x를 나르던 열 오염 제거).
+//  exact 불변 근거: 응시원서 잔여 열 편차는 GT(hwpx 통합그리드)의 유령 좁은 열
+//  (섹션별 구분선 217.9/226.0을 별도 열로 모델링)과 본문 영역에 괘선 자체가 없는
+//  열(460.7)로, ①병합 열 표현 차의 재확인 — 선 증거로 재현 불가.)
+//
+// 직전 기준선 (2026-07-03 10차: 강등 라벨헤더 가드 + 체인 뷰 합성 + 매칭 3픽스 +
+// 모수 예외, 2회 동일): 매칭 0.985507 | exact 0.652174 | cellF1 0.724023 |
 // cellExact 0.697712 | contentNED 0.523722
 // (직전 기준선 매칭 0.9028/exact 0.5833/F1 0.6518/cellExact 0.6732/NED 0.4939 —
 //  10차 개선: ①파서 강등 가드: 첫 행 전체가 마커 없는 짧은 라벨 + 본문 내용 ≥1셀
@@ -56,12 +71,12 @@ const docFilter = (args.find(a => a.startsWith("--doc=")) ?? "").split("=")[1] ?
 
 const round = (x, d = 6) => (x === null || x === undefined ? null : +x.toFixed(d))
 
-// 무후퇴 플로어 (기준선 2026-07-03 10차: 매칭 0.985507 / exact 0.652174 / cellF1 0.724023
-// / cellExact 0.697712 / NED 0.523722 — 2회 안정 확인 후 잠금)
+// 무후퇴 플로어 (기준선 2026-07-11 11차: 매칭 0.985507 / exact 0.652174 / cellF1 0.727382
+// / cellExact 0.727941 / NED 0.530784 — 적층 표 분리 후 상향 잠금)
 // reorderedMax: 순서구제 무증가 플로어 (2026-07-05 실측 3 = pair06 2단 조판 정당 케이스).
 //   순서구제가 공용 matchTables에 있어 표 방출순서 회귀가 재짝지음으로 green 위장 가능 (리뷰 #15)
 // minPairs/minRefTables: 모수 하한 — 코퍼스 소실 시 rate(0/0)=1 조용한 만점 방지 (리뷰 #14)
-const GATES = { matchedRate: 0.98, exactRate: 0.65, cellF1: 0.72, cellExactRate: 0.69, contentNED: 0.52, parseErrors: 0, reorderedMax: 3, minPairs: 3, minRefTables: 35 }
+const GATES = { matchedRate: 0.98, exactRate: 0.65, cellF1: 0.72, cellExactRate: 0.72, contentNED: 0.525, parseErrors: 0, reorderedMax: 3, minPairs: 3, minRefTables: 35 }
 
 const t0 = performance.now()
 const dir = join(root, "corpus", "pairs")

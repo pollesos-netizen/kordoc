@@ -98,6 +98,47 @@ export const COMMAND_MAP: Record<string, string> = {
   ddots: "DDOTS",
 }
 
+/**
+ * EqEdit 함수 키워드 — 렌더러가 로만체 함수명으로 아는 어휘. 되읽기(hmlToLatex)가
+ * 명령이 아닌 평문(sin)이라 COMMAND_MAP 고정점 검증 대상이 아니며, 미지원 명령
+ * 따옴표 폴백에서 이들을 "sin" 리터럴로 감싸지 않기 위한 명단이다 (identity 통과).
+ */
+const EQEDIT_FUNCTIONS = new Set([
+  "sin", "cos", "tan", "cot", "sec", "csc",
+  "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh", "coth",
+  "log", "ln", "exp", "det", "gcd", "mod",
+  "max", "min", "arg", "deg", "hom", "ker", "Pr",
+])
+
+// CONVERT_MAP 역인덱스 충전 (v4.0.6) — 읽기맵(~150 연산자)에 있는데 쓰기맵에 없던
+// 명령(\div \approx \therefore \because \oplus \uparrow \propto \cong \equiv \sim
+// \angle \mapsto \ll \gg \dagger \models \owns 등 ~60개)이 백슬래시만 벗겨진
+// '맨 알파벳'으로 EqEdit에 누출되던 것을 봉합. 단일 명령 값(^\[A-Za-z]+$)만
+// 역매핑 — 합성 값(\mathop ∯·{\Large\ominus}·^{\circ}C 등 읽기전용)은 제외.
+// 명시 항목이 항상 우선(leq→LEQ 등 기존 정준형 유지). 같은 LaTeX의 후보 토큰이
+// 여럿이면 이름 일치 > 영문 토큰 > 사전순으로 정준형을 고정한다.
+// 왕복은 구성상 보장: 방출 토큰 T의 CONVERT_MAP[T]가 곧 원 명령이다.
+{
+  const reverse = new Map<string, string>()
+  const prefer = (name: string, a: string, b: string): string => {
+    if (a === name) return a
+    if (b === name) return b
+    const aAlpha = /^[A-Za-z]+$/.test(a)
+    const bAlpha = /^[A-Za-z]+$/.test(b)
+    if (aAlpha !== bAlpha) return aAlpha ? a : b
+    return a < b ? a : b
+  }
+  for (const [token, latex] of Object.entries(CONVERT_MAP)) {
+    const m = /^\\([A-Za-z]+)$/.exec(latex)
+    if (!m) continue
+    const name = m[1]
+    if (name in COMMAND_MAP) continue
+    const prev = reverse.get(name)
+    reverse.set(name, prev === undefined ? token : prefer(name, token, prev))
+  }
+  for (const [name, token] of reverse) COMMAND_MAP[name] = token
+}
+
 // 악센트도 왕복 정합: 값 토큰을 hmlToLatex가 되돌린 명령이 다시 이 맵의 키여야
 // 한다 (bar → \overline → bar 고정점. overrightarrow는 vec의 되읽기 별칭).
 export const ACCENT_COMMANDS: Record<string, string> = {
@@ -217,11 +258,23 @@ function readCommand(input: string, idx: number, depth: number): ReadResult {
     const endIdx = input.indexOf(endTag, env.next)
     if (endIdx === -1) return { value: env.value, next: env.next }
     const body = convertLatexFragment(input.slice(env.next, endIdx), depth + 1)
-    // matrix 계열은 EqEdit 네이티브 토큰으로 — LEFT (/RIGHT ) 합성보다 왕복이 정확
-    // (hmlToLatex가 pmatrix/bmatrix를 원 환경 그대로 복원한다)
-    if (env.value === "matrix" || env.value === "pmatrix" || env.value === "bmatrix") {
-      return { value: `{${env.value}{${body}}}`, next: endIdx + endTag.length }
+    // 환경 → EqEdit 네이티브 토큰 화이트리스트 — LEFT (/RIGHT ) 합성보다 왕복이 정확.
+    // 고정점: matrix/pmatrix/bmatrix 원 환경 복원, cases→HULKCASE→\begin{cases},
+    // vmatrix→dmatrix→\begin{vmatrix}. align 계열은 eqalign으로 렌더 보존
+    // (되읽기는 \eqalign — plain TeX 어휘라 고정점은 아님, 렌더·내용 무손실).
+    const ENV_TOKEN: Record<string, string> = {
+      matrix: "matrix", pmatrix: "pmatrix", bmatrix: "bmatrix",
+      vmatrix: "dmatrix", cases: "cases",
+      align: "eqalign", "align*": "eqalign", aligned: "eqalign",
     }
+    const tok = ENV_TOKEN[env.value]
+    if (tok) return { value: `{${tok}{${body}}}`, next: endIdx + endTag.length }
+    // Bmatrix(중괄호 행렬) — 전용 토큰이 없어 LEFT {/RIGHT } 합성 (되읽기
+    // \left\{\begin{matrix}…\end{matrix}\right\} — 렌더·내용 보존)
+    if (env.value === "Bmatrix") {
+      return { value: `LEFT { {matrix{${body}}} RIGHT }`, next: endIdx + endTag.length }
+    }
+    // 미지원 환경(vmatrix* 등) — 종전대로 래퍼만 벗기고 본문 보존
     return { value: body, next: endIdx + endTag.length }
   }
 
@@ -263,7 +316,15 @@ function readCommand(input: string, idx: number, depth: number): ReadResult {
     return { value: `"${tok.value}"`, next: tok.next }
   }
 
-  return { value: COMMAND_MAP[command] ?? command, next: name.next }
+  const mapped = COMMAND_MAP[command]
+  if (mapped !== undefined) return { value: mapped, next: name.next }
+  if (EQEDIT_FUNCTIONS.has(command)) return { value: command, next: name.next }
+  // 미지원 명령 — 백슬래시만 벗긴 '맨 알파벳'은 EqEdit이 변수 나열(이탤릭 d·i·v)로
+  // 렌더해 조용한 오염이 된다. 리터럴 따옴표로 보호해 손실을 가시화·안정화한다
+  // (hmlToLatex가 "..."를 \text{...}로 되읽는 안정 어휘). 단일 문자(\, 구분자 등)는
+  // 종전대로 통과 — 구조 어휘 훼손 방지.
+  if (/^[A-Za-z]{2,}$/.test(command)) return { value: `"${command}"`, next: name.next }
+  return { value: command, next: name.next }
 }
 
 function convertLatexFragment(input: string, depth: number): string {

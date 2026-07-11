@@ -236,6 +236,7 @@ export function alignUnits(units, mdKey) {
   const buf = new ConsumeBuffer(mdKey)
   const perUnit = new Array(units.length)
   const pending = [] // 정확 매칭 실패한 긴 유닛 인덱스
+  const dupDeferred = [] // mdKey에 2회+ 등장하는 텍스트의 긴 유닛 — Pass 1.5에서 앵커 기반 배정
 
   // 짧은 유닛(중복 빈도 높음: "위원", "1" 등)은 긴 유닛의 부분 매칭까지 끝난 뒤
   // 위치 인지(2-포인터) 탐색으로 처리 — 멀리 떨어진 동일 문구를 가로채 긴 유닛에
@@ -262,6 +263,47 @@ export function alignUnits(units, mdKey) {
     if (!t) { perUnit[i] = { id: u.id, kind: u.kind, pos: -2, matched: 0, total: 0, runMiss: 0 }; continue }
     if (isShort(i)) continue
     const pos = buf.find(t, 0)
+    if (pos !== -1) {
+      // 중복 등장 텍스트(mdKey에 2회+)는 최초 등장에 즉시 배정하면 문서 순서를 무시하고
+      // 다른 유닛의 내부(장문 셀의 쉼표 연결 구간 등)를 강탈할 수 있다 — 배정을 보류하고
+      // Pass 1.5에서 양옆 고유 유닛의 소비 위치를 앵커로 등장 위치를 선택한다.
+      const firstRaw = mdKey.indexOf(t)
+      if (mdKey.indexOf(t, firstRaw + 1) !== -1) { dupDeferred.push(i); continue }
+      buf.consume(pos, pos + t.length)
+      perUnit[i] = { id: u.id, kind: u.kind, pos, matched: t.length, total: t.length, runMiss: 0 }
+    } else {
+      pending.push(i)
+    }
+  }
+
+  // ── Pass 1.5: 중복 등장 긴 유닛 (문서 순서, 양옆 매칭 위치 앵커 — 거부 없이 우선순위만) ──
+  // 탐색 우선순위는 Pass 3과 동일: ① from 이후 + 구간 안 → ② 문서 앞쪽 + 구간 안 →
+  // ③ from 이후 아무 곳 → 처음부터. 어떤 등장이든 미소비로 남아 있으면 반드시 배정하므로
+  // 신규 미스를 만들지 않는다. 전부 소비됐으면 Pass 2 부분 매칭으로 넘긴다.
+  dupDeferred.sort((a, b) => a - b)
+  for (const i of dupDeferred) {
+    const u = units[i]
+    const t = u.text
+    let from = 0
+    for (let j = i - 1; j >= 0; j--) {
+      const p = perUnit[j]
+      if (p && p.pos >= 0 && hasContent(j)) { from = p.pos; break }
+    }
+    let until = buf.text.length
+    for (let j = i + 1; j < units.length; j++) {
+      const p = perUnit[j]
+      if (p && p.pos >= 0 && hasContent(j)) { until = p.pos + units[j].text.length; break }
+    }
+    let pos = buf.find(t, from)
+    if (pos !== -1 && pos + t.length > until) pos = -1
+    if (pos === -1) {
+      const p0 = buf.find(t, 0)
+      if (p0 !== -1 && p0 + t.length <= until) pos = p0
+    }
+    if (pos === -1) {
+      pos = buf.find(t, from)
+      if (pos === -1) pos = buf.find(t, 0)
+    }
     if (pos !== -1) {
       buf.consume(pos, pos + t.length)
       perUnit[i] = { id: u.id, kind: u.kind, pos, matched: t.length, total: t.length, runMiss: 0 }
@@ -290,17 +332,20 @@ export function alignUnits(units, mdKey) {
     if (perUnit[i] || !isShort(i)) continue
     const u = units[i]
     const t = u.text
+    // 앵커는 본문 문자(문자/숫자) 보유 유닛만 — 별표/구두점-only 마스킹 유닛은 normKey
+    // 공백 제거로 인접 마스킹이 합쳐져 pos가 어긋나 있을 수 있어(multiset 임의 귀속),
+    // 그걸 앵커로 쓰면 단일 숫자 셀이 멀리 떨어진 본문("02644" 등)을 강탈한다.
     // 문서 순서상 직전에 매칭된 유닛의 시작 위치 이후를 먼저 탐색
     let from = 0
     for (let j = i - 1; j >= 0; j--) {
       const p = perUnit[j]
-      if (p && p.pos >= 0) { from = p.pos; break }
+      if (p && p.pos >= 0 && hasContent(j)) { from = p.pos; break }
     }
     // 문서 순서상 다음에 이미 매칭된 유닛의 끝 위치까지를 정상 구간으로
     let until = buf.text.length
     for (let j = i + 1; j < units.length; j++) {
       const p = perUnit[j]
-      if (p && p.pos >= 0) { until = p.pos + units[j].text.length; break }
+      if (p && p.pos >= 0 && hasContent(j)) { until = p.pos + units[j].text.length; break }
     }
     // 탐색 우선순위: ① from 이후 + 구간 안 → ② 문서 앞쪽 + 구간 안 → ③ 기존 동작
     // (from 이후 아무 곳 → 처음부터). 거부 없이 우선순위만 바꿔 신규 미스를 만들지 않는다.

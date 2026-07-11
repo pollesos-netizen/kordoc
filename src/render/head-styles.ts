@@ -19,6 +19,8 @@ export interface RenderCharStyle {
   spacing: number
   /** CSS font-family 스택 — charPr fontRef(hangul)에서 해석. 없으면 root 기본 폴백 */
   fontFamily?: string
+  /** HWP 원본 글꼴명 (fontfaces face) — reflow 폭 테이블 선택용 */
+  face?: string
 }
 
 export type ParaAlign = "JUSTIFY" | "LEFT" | "RIGHT" | "CENTER" | "DISTRIBUTE" | "DISTRIBUTE_SPACE"
@@ -257,6 +259,7 @@ export function parseRenderStyles(headXml: string): RenderStyles {
           ratio: Number(ratioEl?.getAttribute("hangul")) || 100,
           spacing: Number(spacingEl?.getAttribute("hangul")) || 0,
           fontFamily: face ? hwpFaceToCssStack(face) : undefined,
+          face,
         })
       }
     } else if (tag === "paraPr") {

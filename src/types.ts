@@ -15,6 +15,14 @@ export interface CellContext {
 /** 블록 타입 — v2.0에서 heading, list, image, separator 추가 */
 export type IRBlockType = "paragraph" | "table" | "heading" | "list" | "image" | "separator"
 
+/** 인라인 강조 run-span — 문단 텍스트를 서식 단위로 쪼갠 조각 (텍스트 연결 = block.text) */
+export interface IRSpan {
+  text: string
+  bold?: boolean
+  italic?: boolean
+  code?: boolean
+}
+
 export interface IRBlock {
   type: IRBlockType
   text?: string
@@ -37,6 +45,17 @@ export interface IRBlock {
   footnoteText?: string
   /** 이미지 데이터 (type="image"일 때) */
   imageData?: ImageData
+  /** 인라인 강조 run-span (선택 — 현재 kordoc 생성 hwpx 왕복 채널만 채움).
+   *  존재하면 마크다운 변환이 **·*·` 마커를 재방출한다 */
+  spans?: IRSpan[]
+  /** 인용문 문단 (선택 — kordoc 생성 hwpx 왕복 채널) — 마크다운 변환이 "> " 접두 재방출 */
+  quote?: boolean
+  /**
+   * 문단 들여쓰기(HWPUNIT, 선택) — HWPX paraPr `<hh:margin>` 자식요소형 hc:left
+   * (+양수 hc:intent 첫줄분). 마크다운 방출엔 쓰지 않는 관찰 슬롯 — gongmun 리스트
+   * depth 재유도·양식 분석 등 소비자 몫 (v4.0.4)
+   */
+  indent?: number
 }
 
 /** 추출된 이미지 바이너리 데이터 */

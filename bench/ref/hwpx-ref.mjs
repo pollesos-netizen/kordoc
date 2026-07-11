@@ -229,6 +229,8 @@ export async function extractRef(buffer) {
 
   // ── 문단 텍스트 수집 (인라인 요소 + ctrl 카테고리 라우팅 + 구조 자식 분리) ──
   function collectPara(p) {
+    // 자동부호 문단 사용 수 — phantom의 자동번호 관용(score.mjs) 문서 단위 게이트용
+    if (headingParaIds.has(p.attrs?.parapridref)) counters.autoNumHeadingParas++
     let text = ""
     let leaderCut = false
     const structural = [] // {type:'tbl'|'shape'|'drawtext', node}

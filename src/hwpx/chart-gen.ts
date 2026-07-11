@@ -18,6 +18,8 @@
  *   ```
  */
 
+import { HU_PER_MM } from "./geometry.js"
+
 const XML_ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" }
 const xmlEscape = (s: string): string => s.replace(/[&<>]/g, c => XML_ESC[c])
 
@@ -90,7 +92,7 @@ export interface ChartFence {
   heightHu: number
 }
 
-const HU_PER_MM = 7200 / 25.4
+// HU_PER_MM은 geometry.ts SSOT (v4.0.5 P0-3)
 
 /** 예약 키 — 계열 이름으로 쓸 수 없는 라인 */
 const RESERVED_KEYS = new Set(["type", "cat", "size", "colors", "point_colors", "title"])

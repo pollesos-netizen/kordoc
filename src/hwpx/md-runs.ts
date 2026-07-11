@@ -58,6 +58,8 @@ export function parseMarkdownToBlocks(md: string): MdBlock[] {
   const lines = md.replace(/\r\n?/g, "\n").split("\n")
   const blocks: MdBlock[] = []
   let i = 0
+  // 리스트 들여쓰기 스택 — depth별 물리 들여쓰기(칸 수)를 보관. 리스트 run이 끊기면 초기화 (v4.0.5)
+  const listStack: number[] = []
 
   while (i < lines.length) {
     const line = lines[i]
@@ -161,7 +163,10 @@ export function parseMarkdownToBlocks(md: string): MdBlock[] {
       const tableRows: string[][] = []
       while (i < lines.length && lines[i].trimStart().startsWith("|")) {
         const row = lines[i]
-        if (/^[\s|:\-]+$/.test(row)) { i++; continue }
+        // 구분행 판정 — 각 구분 셀이 `:?-+:?` 꼴(- 최소 1개)이어야 한다. 전부 빈
+        // 데이터 행 `|  |  |`이 구분행으로 오인·스킵되는 것 방지 (벤치 실측, v4.0.5)
+        const sepCells = row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|")
+        if (sepCells.every(c => /^\s*:?-+:?\s*$/.test(c))) { i++; continue }
         const cells = row.split("|").slice(1, -1).map(c => c.trim())
         if (cells.length > 0) tableRows.push(cells)
         i++
@@ -170,23 +175,46 @@ export function parseMarkdownToBlocks(md: string): MdBlock[] {
       continue
     }
 
-    // 인용문
+    // 인용문 — 공백줄 없는 연속 > 라인은 한 블록으로 조인(개행 결합 — 줄 경계 보존),
+    // 빈 > 줄에서만 분리. 개조식 프리셋에서 줄마다 ※ 참고로 쪼개지는 것 방지 (v4.0.5).
+    // 렌더가 분기: 실측 프리셋은 ※ 1문단(공백 결합), 기본은 줄별 문단(종전 시각 유지)
     if (line.trimStart().startsWith("> ")) {
       const quoteLines: string[] = []
       while (i < lines.length && (lines[i].trimStart().startsWith("> ") || lines[i].trimStart().startsWith(">"))) {
-        quoteLines.push(lines[i].replace(/^>\s?/, ""))
+        quoteLines.push(lines[i].replace(/^>\s?/, "").trim())
         i++
       }
+      let joined: string[] = []
       for (const ql of quoteLines) {
-        blocks.push({ type: "blockquote", text: ql.trim() || "" })
+        if (ql) { joined.push(ql); continue }
+        if (joined.length) blocks.push({ type: "blockquote", text: joined.join("\n") })
+        joined = []
       }
+      if (joined.length) blocks.push({ type: "blockquote", text: joined.join("\n") })
       continue
     }
 
-    // 리스트
-    const listMatch = line.match(/^(\s*)([-*+]|\d+[.)]) (.+)$/)
+    // 리스트 — 선두 탭은 2칸 상당으로 확장(이 코드베이스 그리드가 2칸 — CommonMark 4칸과 다름).
+    // depth는 절대 그리드(÷2)가 아니라 들여쓰기 스택으로 산출: 물리 들여쓰기 증가=한 단계
+    // down, 감소=매칭 조상 레벨로 복귀. 4칸 한 단계가 depth 2로 튀거나 탭 자식이
+    // 형제로 붕괴하는 것 방지, 2칸 그리드 입력의 depth는 종전과 동일 (v4.0.5)
+    const listLine = line.replace(/^[\t ]+/, ws => ws.replace(/\t/g, "  "))
+    const listMatch = listLine.match(/^(\s*)([-*+]|\d+[.)]) (.+)$/)
     if (listMatch) {
-      const indent = Math.floor(listMatch[1].length / 2)
+      // 리스트 run이 끊겼으면(직전 블록이 리스트 아님) 스택 초기화 — 빈 줄은 run 유지
+      if (blocks.length === 0 || blocks[blocks.length - 1].type !== "list_item") listStack.length = 0
+      const phys = listMatch[1].length
+      let indent: number
+      if (listStack.length === 0) {
+        // run 첫 항목 — 기존 2칸 그리드로 시드 (들여쓰고 시작하는 입력의 depth 종전 유지)
+        indent = Math.floor(phys / 2)
+        for (let d = 0; d < indent; d++) listStack.push(d * 2)
+        listStack.push(phys)
+      } else {
+        while (listStack.length > 1 && phys < listStack[listStack.length - 1]) listStack.pop()
+        if (phys > listStack[listStack.length - 1]) listStack.push(phys)
+        indent = listStack.length - 1
+      }
       const ordered = /\d/.test(listMatch[2])
       blocks.push({ type: "list_item", text: listMatch[3].trim(), ordered, indent, marker: listMatch[2] })
       i++; continue
@@ -226,7 +254,11 @@ export function parseInlineMarkdown(text: string): InlineSpan[] {
 
   const spans: InlineSpan[] = []
   // 패턴: `code`, ***bolditalic***, **bold**, *italic*, __bold__, _italic_
-  const regex = /(`[^`]+`|\*{3}[^*]+\*{3}|\*{2}[^*]+\*{2}|\*[^*]+\*|_{2}[^_]+_{2}|_[^_]+_)/g
+  // 언더스코어 강조는 GFM처럼 단어 내부 비활성 (post_id·__init__ 오염 방지, v4.0.5):
+  // 여는 _ 는 앞이 공백/구두점/문두 + 뒤가 비공백, 닫는 _ 는 앞이 비공백 + 뒤가
+  // 공백/구두점/문미일 때만. (?<!_)/(?!_)는 _ run을 원자로 취급(_init_ 부분매칭 방지),
+  // \x00 은 이스케이프 센티널(마스킹된 구두점)이라 경계로 인정. */** 강조는 종전 그대로.
+  const regex = /(`[^`]+`|\*{3}[^*]+\*{3}|\*{2}[^*]+\*{2}|\*[^*]+\*|(?<![^\s\p{P}\p{S}\x00])(?<!_)_{2}(?=\S)[^_]+(?<=\S)_{2}(?!_)(?![^\s\p{P}\p{S}\x00])|(?<![^\s\p{P}\p{S}\x00])(?<!_)_(?=\S)[^_]+(?<=\S)_(?!_)(?![^\s\p{P}\p{S}\x00]))/gu
   let lastIdx = 0
 
   for (const match of text.matchAll(regex)) {

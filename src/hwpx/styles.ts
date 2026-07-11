@@ -43,6 +43,7 @@ export interface HwpxStyleMap {
   numberings: Map<string, NumberingDef>  // numbering id → 정의
   bullets: Map<string, string>           // bullet id → 글머리 문자
   paraHeadings: Map<string, ParaHeadingRef>  // paraPr id → heading 참조
+  paraIndents: Map<string, { left: number; intent: number }>  // paraPr id → 들여쓰기(HWPUNIT, v4.0.4)
 }
 
 /** head.xml 또는 header.xml에서 스타일 정보 추출 */
@@ -53,6 +54,7 @@ export async function extractHwpxStyles(zip: JSZip, decompressed?: { total: numb
     numberings: new Map(),
     bullets: new Map(),
     paraHeadings: new Map(),
+    paraIndents: new Map(),
   }
 
   const headerPaths = ["Contents/header.xml", "header.xml", "Contents/head.xml", "head.xml"]
@@ -80,6 +82,7 @@ export async function extractHwpxStyles(zip: JSZip, decompressed?: { total: numb
       parseNumberings(domDoc, result.numberings)
       parseBullets(domDoc, result.bullets)
       parseParaHeadings(domDoc, result.paraHeadings)
+      parseParaIndents(domDoc, result.paraIndents)
       break
     } catch { continue }
   }
@@ -108,11 +111,20 @@ function parseCharProperties(doc: Document, map: Map<string, HwpxCharProperty>):
         }
       }
 
-      // bold/italic
+      // bold/italic — 정본은 자식 요소(<hh:bold/>) 존재. 속성형(bold="1")은 구버전
+      // HWPML 계열 잔재라 둘 다 인정한다 (실측 한컴 HWPX는 요소만 씀)
       const bold = el.getAttribute("bold")
       if (bold === "true" || bold === "1") prop.bold = true
       const italic = el.getAttribute("italic")
       if (italic === "true" || italic === "1") prop.italic = true
+      const kids = el.childNodes
+      for (let j = 0; j < (kids?.length ?? 0); j++) {
+        const k = kids[j] as Element
+        if (k.nodeType !== 1) continue
+        const localTag = (k.tagName || "").replace(/^[^:]+:/, "")
+        if (localTag === "bold") prop.bold = true
+        else if (localTag === "italic") prop.italic = true
+      }
 
       // 하위 요소에서 fontface 탐색
       const fontFaces = el.getElementsByTagName("*")
@@ -186,6 +198,35 @@ function parseBullets(doc: Document, map: Map<string, string>): void {
       const id = el.getAttribute("id") || ""
       const char = el.getAttribute("char") || ""
       if (id && char) map.set(id, char)
+    }
+    if (map.size > 0) break
+  }
+}
+
+/**
+ * header.xml의 hh:paraPr > hh:margin 파싱 — 문단 속성 id → 들여쓰기(HWPUNIT) (v4.0.4).
+ * hc:left(단계 들여쓰기 누적)와 hc:intent(첫 줄 — 음수=내어쓰기)를 자식요소형에서 읽는다
+ * (속성형 indent="…"는 한컴이 무시하는 형식이라 여기서도 읽지 않음 — 생성기 규약과 동일).
+ * IRBlock.indent 슬롯의 원료 — gongmun 리스트 depth 재유도 등 소비자 몫.
+ */
+function parseParaIndents(doc: Document, map: Map<string, { left: number; intent: number }>): void {
+  const tagNames = ["hh:paraPr", "paraPr"]
+  for (const tagName of tagNames) {
+    const elements = doc.getElementsByTagName(tagName)
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i]
+      const id = el.getAttribute("id") || ""
+      if (!id) continue
+      const margin = findChildByLocalName(el, "margin")
+      if (!margin) continue
+      const readHu = (name: string): number => {
+        const child = findChildByLocalName(margin, name)
+        const v = parseInt(child?.getAttribute("value") || child?.textContent || "", 10)
+        return Number.isFinite(v) ? v : 0
+      }
+      const left = readHu("left")
+      const intent = readHu("intent")
+      if (left !== 0 || intent !== 0) map.set(id, { left, intent })
     }
     if (map.size > 0) break
   }

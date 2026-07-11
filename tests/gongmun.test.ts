@@ -810,3 +810,53 @@ describe("v4.0.2 프로덕션 리뷰 회귀", () => {
     assert.equal(validation.ok, true, validation.issues.map((i) => i.message).join("\n"))
   })
 })
+
+describe("v4.0.4 프로덕션 리뷰 회귀", () => {
+  const sectionXml = async (buf: ArrayBuffer): Promise<string> => {
+    const zip = await JSZip.loadAsync(buf)
+    return zip.file("Contents/section0.xml")!.async("text")
+  }
+
+  it("참고(※) 항목이 법정번호(standard) 순번을 먹지 않는다 — 번호 증발 방지", async () => {
+    const md = "## 배경\n- 첫째\n- ※ 근거: 정보화법\n- 셋째\n- 넷째"
+    const sec = await sectionXml(await markdownToHwpx(md, { gongmun: { preset: "계획서", numbering: "standard" } }))
+    const nums = [...sec.matchAll(/<hp:t>(\d+)\. /g)].map((m) => m[1])
+    for (const n of ["1", "2", "3"]) assert.ok(nums.includes(n), `번호 ${n} 누락 (참고 항목이 순번 소비): ${nums.join(",")}`)
+  })
+
+  it("개조식 장식표 폭 — 기본 여백은 48180 유지, 넓은 여백은 본문폭 이하로 스케일", async () => {
+    const md = "# 종합계획\n\n## 배경\n- 항목"
+    const base = await sectionXml(await markdownToHwpx(md, { gongmun: { preset: "개조식" } }))
+    assert.ok(base.includes('width="48180"'), "기본 여백 표지 표 폭 48180 회귀 없음")
+    const wide = await sectionXml(await markdownToHwpx(md, { gongmun: { preset: "개조식", margins: { top: 15, bottom: 15, left: 35, right: 35 } } }))
+    const bodyW = mmToHwpunit(210 - 35 - 35)
+    const widths = [...wide.matchAll(/<hp:sz width="(\d+)" widthRelTo="ABSOLUTE"/g)].map((m) => +m[1])
+    assert.ok(Math.max(...widths) <= bodyW, `넓은 여백 표 폭이 본문폭(${bodyW}) 초과: ${Math.max(...widths)}`)
+    assert.ok(!wide.includes('width="48180"'), "넓은 여백에서 48180 고정폭 잔존")
+  })
+
+  it("h3 위계 — bodyPt 18에서도 h1 ≥ h2 ≥ h3 (역전 방지)", async () => {
+    const head = await headerXml(await markdownToHwpx("# 제목\n## 대분류\n### 소제목", { gongmun: { preset: "official", bodyPt: 18 } }))
+    const h = (id: number) => Number(head.match(new RegExp(`<hh:charPr id="${id}" height="(\\d+)"`))![1])
+    assert.ok(h(5) >= h(6) && h(6) >= h(7), `위계 역전: h1=${h(5)} h2=${h(6)} h3=${h(7)}`)
+  })
+
+  it("표 열폭에 소수(비정수 HWPUNIT)가 새지 않는다", async () => {
+    const md = "## 실적\n| MOU | OECD | AI |\n|---|---|---|\n| a | b | c |"
+    const sec = await sectionXml(await markdownToHwpx(md, { gongmun: { preset: "보고서" } }))
+    const decimals = [...sec.matchAll(/width="\d+\.\d+"/g)]
+    assert.equal(decimals.length, 0, `소수 폭 방출: ${decimals.map((m) => m[0]).join(",")}`)
+  })
+
+  it("옵션 필드 C0 제어문자 strip — well-formed XML 유지", async () => {
+    const sec = await sectionXml(await markdownToHwpx("본문", { gongmun: { preset: "official", docHead: { title: "과제\x0B계획\x1F안" } } }))
+    assert.ok(!/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(sec), "raw C0 제어문자 잔존")
+  })
+
+  it("원숫자 20 초과 — ⑳ 다음 ㉑, ㉟ 다음 ㊱ (순환 대신 확장 문자셋 ①~㊿)", () => {
+    assert.equal(circledNumber(20), "㉑")
+    assert.equal(circledNumber(34), "㉟")
+    assert.equal(circledNumber(35), "㊱")
+    assert.equal(circledNumber(35).codePointAt(0), 0x32b1)
+  })
+})

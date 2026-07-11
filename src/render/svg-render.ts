@@ -785,12 +785,14 @@ function renderSectionToPages(
   root: Element,
   geom: PageGeom,
   ctxBase: Omit<Ctx, "pages" | "page" | "geom">,
-  hasCache: boolean,
+  doReflow: boolean,
   reflowMode: WrapMode,
 ): { pages: string[][]; pageH: number } {
   const { PW, PH, ML, MT, BODY_W, BODY_H } = geom
-  // Tier-2 reflow — 캐시 없는 문단에 linesegarray 합성 주입(한컴본은 이 경로 미진입).
-  if (!hasCache) reflowSection(root, ctxBase.styles, { BODY_W, BODY_H }, reflowMode)
+  // Tier-2 reflow — 캐시 없는 문단에 linesegarray 합성 주입. 혼합 캐시 문서(한컴
+  // 저장본을 프로그램 편집해 일부 문단만 캐시 없음)도 reflow 옵션이면 진입한다 —
+  // 전량 캐시 문서는 전 문단 skip(Tier-1 무회귀)이라 no-op.
+  if (doReflow) reflowSection(root, ctxBase.styles, { BODY_W, BODY_H }, reflowMode)
 
   // 페이지 분할 프리패스 — 최상위 lineseg vertpos는 페이지 로컬(페이지마다 0부터)이라
   // 역행 지점이 곧 페이지 경계다. 다단(colCount>1)은 단 이동도 vertpos가 리셋되지만
@@ -955,7 +957,7 @@ export async function renderHwpxToSvg(input: ArrayBuffer | Uint8Array, options?:
     const root = doc.documentElement as unknown as Element
     if (!root) { warnings.push(`구역 ${si} XML 파싱 실패 — 생략`); continue }
     const geom = readSectionGeom(root)
-    const { pages, pageH } = renderSectionToPages(root, geom, ctxBase, hasCache, options?.reflowMode ?? "keep")
+    const { pages, pageH } = renderSectionToPages(root, geom, ctxBase, !!options?.reflow, options?.reflowMode ?? "keep")
     rendered.push({ pages, PW: geom.PW, pageH, clipId: `pgclip${si}` })
   }
 

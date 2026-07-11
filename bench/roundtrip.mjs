@@ -41,7 +41,10 @@ const docFilter = (args.find(a => a.startsWith("--doc=")) ?? "").split("=")[1] ?
 // 돌아오는지 — 코퍼스 md에 $$가 없어 게이트 무감이던 구멍 봉합 (PR #39).
 // lineErrors: lineCheck fixture의 실질 줄(정규화 ≥10자)이 왕복에서 통째로 보존되는지 —
 // 번호 뒤 불필요 줄바꿈·문장 중간 끊김 클래스 고정 (2026-07-03 법령 md 실측 후 편입).
-const GATES = { fwdCovMicro: 0.999, bwdCovMicro: 0.998, tableExact: 0.72, cellExact: 0.99, genErrors: 0, headingErrors: 0, equationErrors: 0, lineErrors: 0 }
+// 2026-07-11 v4.0.6 상향: 인라인 강조 run-span 왕복(자사 파일 채널)으로 fixture
+// basic fwd 0.525→1·law 0.943→1, corpus fwd/bwd micro 1.0 도달 — fwd 0.999→0.9995,
+// bwd 0.998→0.9995, tableExact 0.72→0.85(v4.0.5 0.8797 반영) 잠금.
+const GATES = { fwdCovMicro: 0.9995, bwdCovMicro: 0.9995, tableExact: 0.85, cellExact: 0.99, genErrors: 0, headingErrors: 0, equationErrors: 0, lineErrors: 0 }
 
 const round = (x, d = 6) => (x === null || x === undefined ? null : +x.toFixed(d))
 

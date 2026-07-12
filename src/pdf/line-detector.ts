@@ -5,6 +5,7 @@
  * 구현은 목적별 모듈로 분리됨 (외부 소비자는 이 파일 경유로 무변경):
  *   line-types.ts     — 공유 타입(LineSegment/TableGrid/ExtractedCell/TextItem)·상수
  *   line-extract.ts   — 그래픽 ops → 선 추출 + 전처리 + 페이지 경계 필터
+ *   vertical-bridge.ts — 무괘선 밴드로 끊긴 동일 열 수직선 브리지
  *   image-regions.ts  — 이미지 XObject 영역 추출 (정보손실 가시화)
  *   table-grid.ts     — Vertex 생성/병합 + 테이블 그리드 구성
  *   cell-extract.ts   — 그리드 → 병합 셀 구조 (createMatrix)
@@ -26,6 +27,7 @@
 
 export type { LineSegment, TableGrid, ExtractedCell, TextItem } from "./line-types.js"
 export { extractLines, preprocessLines, filterPageBorderLines, closeOpenTableEdges } from "./line-extract.js"
+export { bridgeSplitColumnVerticals } from "./vertical-bridge.js"
 export { extractImageRegions, type ImageRegion } from "./image-regions.js"
 export { buildTableGrids } from "./table-grid.js"
 export { extractCells } from "./cell-extract.js"

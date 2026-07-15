@@ -15,13 +15,14 @@
 
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises"
 import { join, relative } from "node:path"
+import { fileURLToPath } from "node:url"
 import JSZip from "jszip"
 import { parse } from "../dist/index.js"
 import { parseXmlLite } from "./ref/hwpx-ref.mjs"
 import { mdToPlain, normKey } from "./lib/normalize.mjs"
 import { alignUnits } from "./lib/align.mjs"
 
-const root = new URL(".", import.meta.url).pathname
+const root = fileURLToPath(new URL(".", import.meta.url))
 const args = process.argv.slice(2)
 const gateMode = args.includes("--gate")
 const verbose = args.includes("--verbose")

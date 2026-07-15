@@ -14,6 +14,10 @@ async function createDocx(bodyXml: string, opts?: {
   styles?: string
   numbering?: string
   footnotes?: string
+  /** word/_rels/document.xml.rels 안에 넣을 <Relationship> 항목들 */
+  relationships?: string
+  /** ZIP에 추가할 부가 파일 (예: word/media/image1.png) */
+  files?: Record<string, string | Uint8Array>
 }): Promise<ArrayBuffer> {
   const zip = new JSZip()
 
@@ -40,11 +44,15 @@ async function createDocx(bodyXml: string, opts?: {
   // word/_rels/document.xml.rels
   zip.file("word/_rels/document.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+${opts?.relationships ?? ""}
 </Relationships>`)
 
   if (opts?.styles) zip.file("word/styles.xml", opts.styles)
   if (opts?.numbering) zip.file("word/numbering.xml", opts.numbering)
   if (opts?.footnotes) zip.file("word/footnotes.xml", opts.footnotes)
+  if (opts?.files) {
+    for (const [path, data] of Object.entries(opts.files)) zip.file(path, data)
+  }
 
   return await zip.generateAsync({ type: "arraybuffer" })
 }
@@ -328,6 +336,104 @@ describe("DOCX vMerge continue 셀 내용 보존 (리뷰 #18)", () => {
     if (!result.success) return
     assert.ok(result.markdown.includes("병합시작"))
     assert.ok(result.markdown.includes('rowspan="2"'), `rowSpan 병합 깨짐: ${result.markdown}`)
+  })
+})
+
+describe("DOCX 하이퍼링크 (손실 수정)", () => {
+  const REL = (id: string, target: string) =>
+    `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${target}" TargetMode="External"/>`
+
+  it("외부 하이퍼링크(w:hyperlink r:id) → [text](url)", async () => {
+    const buffer = await createDocx(
+      `<w:p><w:hyperlink r:id="rId100"><w:r><w:t>외부링크</w:t></w:r></w:hyperlink></w:p>`,
+      { relationships: REL("rId100", "https://example.com/ext") },
+    )
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.ok(result.markdown.includes("[외부링크](https://example.com/ext)"), `markdown: ${result.markdown}`)
+  })
+
+  it("한 문단 안 하이퍼링크 여러 개 — 모두 보존(문단당 1개 붕괴 수정)", async () => {
+    const buffer = await createDocx(
+      `<w:p>
+        <w:hyperlink r:id="rId100"><w:r><w:t>링크A</w:t></w:r></w:hyperlink>
+        <w:r><w:t> 그리고 </w:t></w:r>
+        <w:hyperlink r:id="rId101"><w:r><w:t>링크B</w:t></w:r></w:hyperlink>
+      </w:p>`,
+      { relationships: REL("rId100", "https://a.example") + REL("rId101", "https://b.example") },
+    )
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.ok(result.markdown.includes("[링크A](https://a.example)"), `링크A 손실: ${result.markdown}`)
+    assert.ok(result.markdown.includes("[링크B](https://b.example)"), `링크B 손실: ${result.markdown}`)
+  })
+
+  it("필드코드 HYPERLINK (w:fldSimple) → [text](url)", async () => {
+    const buffer = await createDocx(
+      `<w:p><w:fldSimple w:instr=' HYPERLINK &quot;https://example.com/simple&quot; '><w:r><w:t>심플링크</w:t></w:r></w:fldSimple></w:p>`,
+    )
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.ok(result.markdown.includes("[심플링크](https://example.com/simple)"), `markdown: ${result.markdown}`)
+  })
+
+  it("필드코드 HYPERLINK (w:fldChar begin/separate/end) → [text](url)", async () => {
+    const buffer = await createDocx(
+      `<w:p>
+        <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+        <w:r><w:instrText xml:space="preserve"> HYPERLINK "https://example.com/field" </w:instrText></w:r>
+        <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+        <w:r><w:t>필드링크</w:t></w:r>
+        <w:r><w:fldChar w:fldCharType="end"/></w:r>
+      </w:p>`,
+    )
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.ok(result.markdown.includes("[필드링크](https://example.com/field)"), `markdown: ${result.markdown}`)
+  })
+
+  it("내부 앵커 하이퍼링크(w:anchor) → [text](#anchor)", async () => {
+    const buffer = await createDocx(
+      `<w:p><w:hyperlink w:anchor="_Toc123"><w:r><w:t>목차항목</w:t></w:r></w:hyperlink></w:p>`,
+    )
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.ok(result.markdown.includes("[목차항목](#_Toc123)"), `markdown: ${result.markdown}`)
+  })
+})
+
+describe("DOCX 이미지 본문 링크 (누락 수정)", () => {
+  const IMG_REL = `<Relationship Id="rId200" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>`
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+  it("문단 내 이미지가 본문에 ![image](...)로 삽입되고 파일도 반환", async () => {
+    const buffer = await createDocx(
+      `<w:p><w:r><w:drawing><a:blip xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" r:embed="rId200"/></w:drawing></w:r></w:p>`,
+      { relationships: IMG_REL, files: { "word/media/image1.png": PNG } },
+    )
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.match(result.markdown, /!\[image\]\(image_001\.png\)/, `이미지 링크 누락: ${result.markdown}`)
+    assert.ok(result.images && result.images.length === 1, `이미지 반환 안 됨: ${JSON.stringify(result.images?.length)}`)
+  })
+
+  it("텍스트 문단 뒤 이미지 — 순서 보존 링크", async () => {
+    const buffer = await createDocx(
+      `<w:p><w:r><w:t>그림 설명</w:t></w:r></w:p>
+       <w:p><w:r><w:drawing><a:blip xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" r:embed="rId200"/></w:drawing></w:r></w:p>`,
+      { relationships: IMG_REL, files: { "word/media/image1.png": PNG } },
+    )
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.ok(result.markdown.includes("그림 설명"), `텍스트 손실: ${result.markdown}`)
+    assert.ok(result.markdown.indexOf("그림 설명") < result.markdown.indexOf("![image]"), `이미지가 텍스트 앞에 옴: ${result.markdown}`)
   })
 })
 

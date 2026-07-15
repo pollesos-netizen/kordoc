@@ -11,7 +11,7 @@ import type {
   CellContext, IRBlock, DocumentMetadata, InternalParseResult,
   ParseOptions, ParseWarning, ExtractedImage, InlineStyle,
 } from "../types.js"
-import { KordocError, precheckZipSize, stripDtd } from "../utils.js"
+import { KordocError, precheckZipSize, stripDtd, sanitizeHref } from "../utils.js"
 import { blocksToMarkdown, buildTable } from "../table/builder.js"
 import { ommlElementToLatex, isDisplayMath } from "./equation.js"
 
@@ -270,6 +270,145 @@ function extractRun(r: Element): RunResult {
   return { text, bold, italic }
 }
 
+// ─── 인라인 하이퍼링크 ─────────────────────────────────
+
+/**
+ * 필드 코드 instr 문자열에서 HYPERLINK URL 추출.
+ * ` HYPERLINK "http://..." `, ` HYPERLINK "http://..." \l "anchor" `,
+ * ` HYPERLINK \l "bookmark" ` (문서 내부 앵커) 모두 처리. HYPERLINK 필드가
+ * 아니면 null.
+ */
+function fieldUrlFromInstr(instr: string): string | null {
+  if (!/HYPERLINK\b/i.test(instr)) return null
+  const urlM = instr.match(/HYPERLINK\s+"([^"]*)"/i)
+  const anchorM = instr.match(/\\l\s+"([^"]*)"/i)
+  if (urlM && urlM[1]) {
+    return anchorM && anchorM[1] ? `${urlM[1]}#${anchorM[1]}` : urlM[1]
+  }
+  if (anchorM && anchorM[1]) return `#${anchorM[1]}`
+  return null
+}
+
+/** 표시 텍스트를 안전한 href로 감싸 마크다운 인라인 링크 생성 (스킴 미허용 시 평문) */
+function makeLink(text: string, rawHref: string | null | undefined): string {
+  if (!text) return ""
+  if (!rawHref) return text
+  const href = sanitizeHref(rawHref)
+  return href ? `[${text}](${href})` : text
+}
+
+interface InlineResult {
+  text: string
+  bold: boolean
+  italic: boolean
+  footnoteText?: string
+}
+
+/**
+ * 문단의 인라인 콘텐츠를 문서 순서대로 수집.
+ * - `w:hyperlink` (r:id 외부링크 / w:anchor 내부링크) → `[text](url)`
+ * - 필드 코드 HYPERLINK (`w:fldChar` begin/separate/end + `w:instrText`) → `[text](url)`
+ * - `w:fldSimple`(instr="HYPERLINK ...") → `[text](url)`
+ * - 일반 `w:r` → 텍스트(+ bold/italic/각주)
+ * 하나의 문단에 링크가 여러 개 있어도 각각 보존한다(문단당 1개 href 붕괴 수정).
+ */
+function collectInline(
+  p: Element,
+  footnotes: Map<string, string>,
+  rels: Map<string, string>,
+): InlineResult {
+  const parts: string[] = []
+  let bold = false
+  let italic = false
+  let footnoteText: string | undefined
+
+  // 필드 코드 상태 머신 (fldChar begin~separate=instr, separate~end=display)
+  let fieldActive = false
+  let fieldStage: "instr" | "display" = "instr"
+  let fieldInstr = ""
+  let fieldDisplay = ""
+  const flushField = () => {
+    if (!fieldActive) return
+    if (fieldDisplay) {
+      const url = fieldUrlFromInstr(fieldInstr)
+      parts.push(url ? makeLink(fieldDisplay, url) : fieldDisplay)
+    }
+    fieldActive = false
+    fieldStage = "instr"
+    fieldInstr = ""
+    fieldDisplay = ""
+  }
+
+  for (const el of effectiveChildElements(p)) {
+    if (matchesLocal(el, "hyperlink")) {
+      const rId = getAttr(el, "id")
+      const anchor = getAttr(el, "anchor")
+      const t = findElements(el, "r").map(r => extractRun(r).text).join("")
+      if (!t) continue
+      let raw: string | null = null
+      if (rId && rels.has(rId)) raw = rels.get(rId)!
+      else if (anchor) raw = `#${anchor}`
+      // 필드 표시 구간 안이면 평문으로 합류(중첩 링크 방지), 아니면 인라인 링크
+      if (fieldActive && fieldStage === "display") fieldDisplay += t
+      else parts.push(makeLink(t, raw))
+      continue
+    }
+
+    if (matchesLocal(el, "fldSimple")) {
+      const t = findElements(el, "r").map(r => extractRun(r).text).join("")
+      if (!t) continue
+      const url = fieldUrlFromInstr(getAttr(el, "instr") ?? "")
+      parts.push(url ? makeLink(t, url) : t)
+      continue
+    }
+
+    if (matchesLocal(el, "r")) {
+      // fldChar 경계 처리
+      for (const fc of getChildElements(el, "fldChar")) {
+        const ty = getAttr(fc, "fldCharType")
+        if (ty === "begin") { flushField(); fieldActive = true; fieldStage = "instr" }
+        else if (ty === "separate") { if (fieldActive) fieldStage = "display" }
+        else if (ty === "end") flushField()
+      }
+      // instr 텍스트 누적 (필드 지시부)
+      if (fieldActive && fieldStage === "instr") {
+        for (const it of getChildElements(el, "instrText")) fieldInstr += it.textContent ?? ""
+      }
+
+      const rr = extractRun(el)
+      if (rr.bold) bold = true
+      if (rr.italic) italic = true
+
+      const fnRefEls = getChildElements(el, "footnoteReference")
+      if (fnRefEls.length > 0) {
+        const fnId = getAttr(fnRefEls[0], "id")
+        if (fnId && footnotes.has(fnId)) footnoteText = footnotes.get(fnId)
+      }
+
+      if (rr.text) {
+        if (fieldActive && fieldStage === "display") fieldDisplay += rr.text
+        else if (fieldActive && fieldStage === "instr") { /* instrText로 처리됨 — 잔여 t 무시 */ }
+        else parts.push(rr.text)
+      }
+      continue
+    }
+  }
+  flushField() // 닫히지 않은 필드 방어
+
+  // OMML 수식 — <m:oMath> / <m:oMathPara> 를 LaTeX 로 변환해 덧붙임.
+  // 인라인 수식은 `$...$`, display 는 `$$...$$`. 순서는 run 뒤로 몰리지만
+  // 대부분 한 단락 내 수식/텍스트가 분리돼 있어 실용상 무해.
+  for (const om of collectOmmlRoots(p)) {
+    const latex = ommlElementToLatex(om)
+    if (!latex) continue
+    if (isDisplayMath(om)) parts.push(" $$" + latex + "$$ ")
+    else parts.push(" $" + latex + "$ ")
+  }
+
+  const text = parts.join("").replace(/[ \t]{2,}/g, " ").trim()
+  return { text, bold, italic, footnoteText }
+}
+
 // ─── 단락 파싱 ─────────────────────────────────────────
 
 function parseParagraph(
@@ -298,70 +437,7 @@ function parseParagraph(
     }
   }
 
-  // 텍스트 수집
-  const parts: string[] = []
-  let hasBold = false
-  let hasItalic = false
-  let href: string | undefined
-  let footnoteText: string | undefined
-
-  // 하이퍼링크 처리
-  const hyperlinks = getChildElements(p, "hyperlink")
-  const hyperlinkTexts = new Set<string>()
-
-  for (const hl of hyperlinks) {
-    const rId = getAttr(hl, "id")
-    const hlText: string[] = []
-    const runs = findElements(hl, "r")
-    for (const r of runs) {
-      const result = extractRun(r)
-      hlText.push(result.text)
-    }
-    const text = hlText.join("")
-    if (text) {
-      hyperlinkTexts.add(text)
-      if (rId && rels.has(rId)) {
-        href = rels.get(rId)
-        parts.push(text)
-      } else {
-        parts.push(text)
-      }
-    }
-  }
-
-  // 일반 run 처리
-  const runs = getChildElements(p, "r")
-  for (const r of runs) {
-    // 하이퍼링크 내부 run은 이미 처리됨 — 부모가 hyperlink이면 스킵
-    if (r.parentNode && (r.parentNode as Element).localName === "hyperlink") continue
-
-    const result = extractRun(r)
-    if (result.bold) hasBold = true
-    if (result.italic) hasItalic = true
-
-    // 각주 참조 확인
-    const fnRefEls = getChildElements(r, "footnoteReference")
-    if (fnRefEls.length > 0) {
-      const fnId = getAttr(fnRefEls[0], "id")
-      if (fnId && footnotes.has(fnId)) {
-        footnoteText = footnotes.get(fnId)
-      }
-    }
-
-    if (result.text) parts.push(result.text)
-  }
-
-  // OMML 수식 — <m:oMath> / <m:oMathPara> 를 LaTeX 로 변환해 덧붙임.
-  // 인라인 수식은 `$...$`, display 는 `$$...$$`. 순서는 run 뒤로 몰리지만
-  // 대부분 한 단락 내 수식/텍스트가 분리돼 있어 실용상 무해.
-  for (const om of collectOmmlRoots(p)) {
-    const latex = ommlElementToLatex(om)
-    if (!latex) continue
-    if (isDisplayMath(om)) parts.push(" $$" + latex + "$$ ")
-    else parts.push(" $" + latex + "$ ")
-  }
-
-  const text = parts.join("").replace(/[ \t]{2,}/g, " ").trim()
+  const { text, bold: hasBold, italic: hasItalic, footnoteText } = collectInline(p, footnotes, rels)
   if (!text) return null
 
   // Heading 판별
@@ -387,7 +463,6 @@ function parseParagraph(
   if (hasBold || hasItalic) {
     block.style = { bold: hasBold || undefined, italic: hasItalic || undefined }
   }
-  if (href) block.href = href
   if (footnoteText) block.footnoteText = footnoteText
   return block
 }
@@ -538,54 +613,84 @@ function collectCellText(
 
 // ─── 이미지 추출 ────────────────────────────────────────
 
-async function extractImages(
+/**
+ * 문서 전체를 훑어 embed(r:id) → 저장 파일명 맵을 구성하고 바이너리를 추출.
+ * 같은 이미지(동일 embedId)는 한 번만 저장하되, 본문 여러 위치에서 참조될 수 있다.
+ * 실제 본문 삽입은 emitParagraphImages가 문단 위치에 맞춰 수행한다(문서 순서 보존).
+ */
+async function buildImageMap(
   zip: JSZip,
   rels: Map<string, string>,
   doc: Document,
   warnings: ParseWarning[],
-): Promise<{ blocks: IRBlock[]; images: ExtractedImage[] }> {
-  const blocks: IRBlock[] = []
+): Promise<{ imageMap: Map<string, string>; images: ExtractedImage[] }> {
+  const imageMap = new Map<string, string>()
   const images: ExtractedImage[] = []
-
-  const drawingElements = findElements(doc.documentElement, "drawing")
   let imgIdx = 0
 
-  for (const drawing of drawingElements) {
-    // a:blip → r:embed
-    const blips = findElements(drawing, "blip")
-    for (const blip of blips) {
-      const embedId = getAttr(blip, "embed")
-      if (!embedId) continue
-      const target = rels.get(embedId)
-      if (!target) continue
+  for (const blip of findElements(doc.documentElement, "blip")) {
+    const embedId = getAttr(blip, "embed")
+    if (!embedId || imageMap.has(embedId)) continue
+    const target = rels.get(embedId)
+    if (!target) continue
 
-      const imgPath = target.startsWith("/") ? target.slice(1)
-        : target.startsWith("word/") ? target
-        : `word/${target}`
+    const imgPath = target.startsWith("/") ? target.slice(1)
+      : target.startsWith("word/") ? target
+      : `word/${target}`
 
-      const imgFile = zip.file(imgPath)
-      if (!imgFile) continue
+    const imgFile = zip.file(imgPath)
+    if (!imgFile) continue
 
-      try {
-        const data = await imgFile.async("uint8array")
-        imgIdx++
-        const ext = imgPath.split(".").pop()?.toLowerCase() ?? "png"
-        const mimeMap: Record<string, string> = {
-          png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
-          gif: "image/gif", bmp: "image/bmp", wmf: "image/wmf", emf: "image/emf",
-        }
-        const filename = `image_${String(imgIdx).padStart(3, "0")}.${ext}`
-        images.push({ filename, data, mimeType: mimeMap[ext] ?? "image/png" })
-        blocks.push({ type: "image", text: filename })
-      } catch (err) {
-        warnings.push({
-          code: "SKIPPED_IMAGE",
-          message: `DOCX 이미지 추출 실패 (${imgPath}): ${err instanceof Error ? err.message : String(err)}`,
-        })
+    try {
+      const data = await imgFile.async("uint8array")
+      imgIdx++
+      const ext = imgPath.split(".").pop()?.toLowerCase() ?? "png"
+      const mimeMap: Record<string, string> = {
+        png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+        gif: "image/gif", bmp: "image/bmp", wmf: "image/wmf", emf: "image/emf",
       }
+      const filename = `image_${String(imgIdx).padStart(3, "0")}.${ext}`
+      images.push({ filename, data, mimeType: mimeMap[ext] ?? "image/png" })
+      imageMap.set(embedId, filename)
+    } catch (err) {
+      warnings.push({
+        code: "SKIPPED_IMAGE",
+        message: `DOCX 이미지 추출 실패 (${imgPath}): ${err instanceof Error ? err.message : String(err)}`,
+      })
     }
   }
-  return { blocks, images }
+  return { imageMap, images }
+}
+
+/**
+ * 문단 내 이미지(a:blip)를 문서 순서대로 image 블록으로 방출.
+ * txbxContent(텍스트박스)는 별도 문단으로 처리되므로 하강하지 않고,
+ * mc:Fallback(pict 사본)은 blip 중복을 유발하므로 건너뛴다.
+ */
+function collectParagraphBlips(node: Element, out: Element[] = [], depth = 0): Element[] {
+  if (depth > 40) return out
+  for (const el of effectiveChildElements(node)) {
+    if (matchesLocal(el, "txbxContent") || matchesLocal(el, "Fallback")) continue
+    if (matchesLocal(el, "blip")) out.push(el)
+    else collectParagraphBlips(el, out, depth + 1)
+  }
+  return out
+}
+
+function emitParagraphImages(
+  p: Element,
+  imageMap: Map<string, string>,
+  linked: Set<string>,
+  out: IRBlock[],
+): void {
+  for (const blip of collectParagraphBlips(p)) {
+    const embedId = getAttr(blip, "embed")
+    if (!embedId) continue
+    const filename = imageMap.get(embedId)
+    if (!filename) continue
+    linked.add(embedId)
+    out.push({ type: "image", text: filename })
+  }
 }
 
 // ─── 메인 파서 ─────────────────────────────────────────
@@ -663,6 +768,10 @@ export async function parseDocxDocument(
     throw new KordocError("DOCX 본문(w:body)을 찾을 수 없습니다")
   }
 
+  // 6. 이미지 맵 — 본문 워크에서 문단 위치에 맞춰 인라인 방출하려면 먼저 구성
+  const { imageMap, images } = await buildImageMap(zip, rels, doc, warnings)
+  const linkedImages = new Set<string>()
+
   const blocks: IRBlock[] = []
   const bodyEl = body[0]
   // sdt(콘텐츠 컨트롤)로 감싼 블록 문단/표도 펼쳐서 본다
@@ -674,10 +783,13 @@ export async function parseDocxDocument(
     if (localName === "p") {
       const block = parseParagraph(el, styles, numbering, footnotes, rels)
       if (block) blocks.push(block)
+      // 문단 내 이미지를 문서 순서대로 본문에 삽입 (저장만 되고 링크 누락되던 버그 수정)
+      if (imageMap.size > 0) emitParagraphImages(el, imageMap, linkedImages, blocks)
       // 텍스트박스(도형 안 글) 문단 — 앵커 문단 뒤에 별도 블록으로
       for (const tp of collectTextboxParagraphs(el)) {
         const tb = parseParagraph(tp, styles, numbering, footnotes, rels)
         if (tb) blocks.push(tb)
+        if (imageMap.size > 0) emitParagraphImages(tp, imageMap, linkedImages, blocks)
       }
     } else if (localName === "tbl") {
       const block = parseTable(el, styles, numbering, footnotes, rels)
@@ -685,10 +797,11 @@ export async function parseDocxDocument(
     }
   }
 
-  // 6. 이미지 추출
-  const { blocks: imgBlocks, images } = await extractImages(zip, rels, doc, warnings)
-  // 이미지 블록은 본문에 이미 포함되어야 하지만, 누락된 것 추가
-  // (drawing이 paragraph 내에 있으므로 대부분 이미 포함됨)
+  // 본문 워크에서 링크되지 않은 이미지(표 셀 안 등)는 문서 끝에 참조 추가 —
+  // 위치는 부정확하지만 "파일만 저장되고 본문 링크 없음"을 방지
+  for (const [embedId, filename] of imageMap) {
+    if (!linkedImages.has(embedId)) blocks.push({ type: "image", text: filename })
+  }
 
   // 7. 메타데이터
   const metadata: DocumentMetadata = {}

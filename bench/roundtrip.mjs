@@ -18,11 +18,12 @@
 
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises"
 import { join, relative, basename } from "node:path"
+import { fileURLToPath } from "node:url"
 import { parse, markdownToHwpx } from "../dist/index.js"
 import { mdToPlain, normKey } from "./lib/normalize.mjs"
 import { collectIrGrids, scoreTables } from "./lib/table-score.mjs"
 
-const root = new URL(".", import.meta.url).pathname
+const root = fileURLToPath(new URL(".", import.meta.url))
 const args = process.argv.slice(2)
 const gateMode = args.includes("--gate")
 const verbose = args.includes("--verbose")

@@ -60,10 +60,11 @@
 
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { parse } from "../dist/index.js"
 import { irAnchors, scoreTables } from "./lib/table-score.mjs"
 
-const root = new URL(".", import.meta.url).pathname
+const root = fileURLToPath(new URL(".", import.meta.url))
 const args = process.argv.slice(2)
 const gateMode = args.includes("--gate")
 const verbose = args.includes("--verbose")

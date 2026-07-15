@@ -205,6 +205,7 @@ export async function parsePdfDocument(buffer: ArrayBuffer, options?: ParseOptio
         high_pua: "글꼴 매핑 실패 (PUA 비율 높음) — 추출 텍스트 신뢰 불가",
         high_control: "제어문자 비율 높음 — 추출 텍스트 신뢰 불가",
         high_replacement: "대체문자(U+FFFD) 비율 높음 — 추출 텍스트 신뢰 불가",
+        garbled_hangul: "글꼴 매핑 실패 (한글 자소 분포 이상) — 추출 텍스트가 깨졌을 수 있음",
       }
       for (const pq of pageQuality) {
         if (!pq.needsOcr || !pq.ocrReason) continue

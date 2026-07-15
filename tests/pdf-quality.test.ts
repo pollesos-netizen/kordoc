@@ -40,6 +40,51 @@ describe("computePageQuality", () => {
   })
 })
 
+describe("computePageQuality — mojibake(정상 음절이지만 깨진 한글) 감지", () => {
+  // 종성 인덱스로 음절 합성: 0xAC00 + cho*588 + jung*28 + jong
+  const syl = (cho: number, jung: number, jong: number) =>
+    String.fromCharCode(0xac00 + cho * 588 + jung * 28 + jong)
+  // 희귀 종성(ㄺ=9, ㄻ=10, ㄼ=11, ㄵ=5, ㅄ=18 ...) 위주 → ToUnicode 오매핑 근사
+  const RARE_JONG = [3, 5, 6, 9, 10, 11, 12, 13, 14, 15, 18, 24, 25, 26]
+
+  it("희귀 받침이 몰린 페이지: needsOcr=true, reason=garbled_hangul", () => {
+    let s = ""
+    for (let i = 0; i < 40; i++) {
+      const jong = RARE_JONG[i % RARE_JONG.length]
+      s += syl(i % 19, (i * 7) % 21, jong)
+    }
+    const q = computePageQuality(1, s)
+    assert.equal(q.needsOcr, true, `q=${JSON.stringify(q)}`)
+    assert.equal(q.ocrReason, "garbled_hangul")
+    assert.ok(q.hangulRareBatchimRatio >= 0.25)
+    assert.ok(q.hangulNoBatchimRatio < 0.15)
+  })
+
+  it("자연 한국어 긴 본문(받침없음 음절 다수): garbled_hangul 아님", () => {
+    const natural = "이 문서는 여러 부서가 협력하여 작성한 종합 계획으로서 각 사업의 " +
+      "목표와 추진 일정 그리고 기대 효과를 상세히 기술하고 있으며 예산 배분과 성과 지표도 함께 담았다"
+    const q = computePageQuality(1, natural)
+    assert.equal(q.needsOcr, false, `자연 한국어 오탐: ${JSON.stringify(q)}`)
+    assert.notEqual(q.ocrReason, "garbled_hangul")
+    assert.ok(q.hangulNoBatchimRatio > 0.3, `받침없음 비율=${q.hangulNoBatchimRatio}`)
+  })
+
+  it("받침 없는 음절만 있는 페이지(가나다…): garbled_hangul 아님", () => {
+    let s = ""
+    for (let i = 0; i < 40; i++) s += syl(i % 19, (i * 3) % 21, 0)
+    const q = computePageQuality(1, s)
+    assert.notEqual(q.ocrReason, "garbled_hangul")
+    assert.equal(q.hangulNoBatchimRatio, 1)
+  })
+
+  it("한글 음절 수 부족(30 미만)이면 판정 보류 — 오탐 방지", () => {
+    let s = ""
+    for (let i = 0; i < 10; i++) s += syl(i % 19, i % 21, RARE_JONG[i % RARE_JONG.length])
+    const q = computePageQuality(1, s)
+    assert.notEqual(q.ocrReason, "garbled_hangul", `표본 부족인데 발화: ${JSON.stringify(q)}`)
+  })
+})
+
 describe("summarizeDocumentQuality", () => {
   it("빈 입력: 모든 값 0/false", () => {
     const s = summarizeDocumentQuality([])

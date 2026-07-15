@@ -12,6 +12,7 @@
 
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises"
 import { join, extname, basename, relative } from "node:path"
+import { fileURLToPath } from "node:url"
 import { parse } from "../dist/index.js"
 import { extractRef } from "./ref/hwpx-ref.mjs"
 import { pdfCrossCoverage } from "./ref/pdf-consensus.mjs"
@@ -20,7 +21,7 @@ import { normKey, normText, mdToPlain } from "./lib/normalize.mjs"
 import { alignUnits, lisLength, levArr } from "./lib/align.mjs"
 import { collectIrGrids, scoreTables } from "./lib/table-score.mjs"
 
-const root = new URL(".", import.meta.url).pathname
+const root = fileURLToPath(new URL(".", import.meta.url))
 const args = process.argv.slice(2)
 const subPath = args.find(a => !a.startsWith("--")) ?? ""
 const only = (args.find(a => a.startsWith("--only=")) ?? "").split("=")[1] ?? null

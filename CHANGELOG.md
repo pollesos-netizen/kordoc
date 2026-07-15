@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.7] - 2026-07-15
+
+DOCX 하이퍼링크·이미지 무음 유실 근본수정 + PDF 오매핑 mojibake 감지. 외부
+품질 평가에서 지적된 3건(PDF 깨진 한글 무경고 통과, DOCX 하이퍼링크 176→21
+손실, 이미지 추출되나 본문 링크 누락)을 각각 해소.
+
+### Fixed
+
+- **DOCX 하이퍼링크 대량 손실** (`src/docx/parser.ts`): 문단당 `href` 단일
+  스칼라가 루프에서 덮어써져 한 문단에 링크가 여러 개여도 마지막 1개만(그것도
+  문단 전체를 감싸) 남던 구조를 제거. `collectInline`이 문단 자식을 문서 순서로
+  순회해 링크마다 인라인 `[text](url)`를 생성한다. 또 `w:fldSimple` / `w:fldChar`
+  begin·separate·end + `w:instrText` **필드코드 HYPERLINK**(워드·구글독스·한글
+  익스포트가 흔히 쓰는 방식 — 종전 전량 유실)와 `w:anchor` 내부 링크(`[text](#anchor)`)
+  처리를 추가. HWP5/HWPX 파서와 동작 정합.
+- **DOCX 이미지 본문 링크 누락** (`src/docx/parser.ts`): 이미지 바이너리는
+  추출·저장되나 `extractImages`가 만든 image 블록이 본문 배열에 병합되지 않고
+  폐기돼 markdown에 `![image](...)` 참조가 하나도 안 들어가던 것. `buildImageMap`
+  (embed 단위 파일 dedup) + `emitParagraphImages`로 본문 워크 중 문단 위치에
+  image 블록을 인라인 방출(문서 순서 보존). 표 셀 등 놓친 이미지는 문서 끝에
+  참조를 보강.
+- **PDF 오매핑 mojibake 무경고 통과** (`src/pdf/quality.ts`): ToUnicode가 잘못
+  매핑돼 글리프가 PUA/FFFD가 아니라 정상 한글 음절 영역의 엉뚱한 글자로 떨어지는
+  케이스("GPU쭒컫 많핂슪")를 종전 품질 게이트(PUA/제어/대체문자)가 못 잡던 것.
+  종성(받침) 분포를 신호로 추가 — 자연 한국어(받침없음 다수·겹받침 희소) vs CID
+  스크램블(받침 균등)을 받침없음<0.15 AND 희귀받침≥0.25 두 조건으로 판정(사전
+  불필요·오탐 방지), `garbled_hangul` 사유로 페이지별 `NEEDS_OCR` 경고 방출.
+- **bench 경로 이식성** (`bench/*.mjs`): `new URL('.', import.meta.url).pathname`이
+  Windows에서 `/D:/...`를 반환해 `join` 시 `D:\D:\...`로 크래시하던 것을
+  `fileURLToPath`로 교정(score·roundtrip·pdf-table-gt·formats-sweep·fuzz-sweep).
+- **배포 메타 버전 동기화**: `plugins/kordoc/.claude-plugin/plugin.json`이 4.0.5로
+  뒤처져 release-metadata 테스트가 실패하던 것 정합.
+
 ## [4.0.6] - 2026-07-12
 
 무음 유실 2건 근본수정 — PDF 무괘선 밴드 표 파편화(예산서 부서명 유실) +

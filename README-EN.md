@@ -11,13 +11,9 @@ HWP 3.x/5.x, HWPX, HWPML, PDF, XLS, XLSX, DOCX — parse, compare, analyze, and 
 
 [한국어](./README.md)
 
-![kordoc demo](./demo.gif)
+[![kordoc — watch the demo](./docs/video-demo.jpg)](https://youtu.be/Q13GmgDcIw0)
 
-### 🎬 Watch
-
-[<img src="https://img.youtube.com/vi/Q13GmgDcIw0/mqdefault.jpg" width="320" alt="kordoc demo video" />](https://youtu.be/Q13GmgDcIw0)
-
-> Narration is in Korean.
+<sub>▶ Click to play on YouTube. Narration is in Korean.</sub>
 
 ---
 

@@ -11,11 +11,9 @@ HWP 3.x/5.x, HWPX, HWPML, PDF, XLS, XLSX, DOCX — 관공서에서 쏟아지는 
 
 [English](./README-EN.md)
 
-![kordoc 데모](./demo.gif)
+[![Kordoc 활용하기 — 영상 보기](./docs/video-demo.jpg)](https://youtu.be/Q13GmgDcIw0)
 
-### 🎬 영상으로 보기
-
-[<img src="https://img.youtube.com/vi/Q13GmgDcIw0/mqdefault.jpg" width="320" alt="kordoc 시연 영상" />](https://youtu.be/Q13GmgDcIw0)
+<sub>▶ 클릭하면 유튜브에서 재생됩니다.</sub>
 
 ---
 

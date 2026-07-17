@@ -29,7 +29,7 @@ An interactive wizard:
 1. Pick your AI client (Claude Desktop / Cursor / Claude Code / Windsurf / VS Code / Gemini CLI / Zed / Antigravity — installed ones show `[detected]`)
 2. Patches the config file automatically → restart the client
 
-Windows gets automatic `cmd /c npx` wrapping. No manual JSON editing. After restart, 11 document tools (`parse_document`, `parse_table`, `fill_form`, `patch_document`, `generate_document`, `place_seal`, …) are live.
+Windows gets automatic `cmd /c npx` wrapping. No manual JSON editing. After restart, 15 document tools (`parse_document`, `parse_table`, `fill_form`, `patch_document`, `generate_document`, `place_seal`, …) are live.
 
 > **CLI-only usage** needs no install at all: `npx kordoc <file>`. See [CLI](#cli) below.
 
@@ -102,7 +102,7 @@ Beyond plain text extraction, kordoc automates the **entire lifecycle of Korean 
 ## What's New in v4.0.6
 
 - **📊 PDF border-less band table fragmentation fix**: budget-ledger tables whose summary-row bands omit vertical rules lost department names — broken vertical segments are now bridged with a 4-way guard (637 sites measured in a real district budget).
-- **📝 HWPX nested tables inside captions preserved (#46)**: table content inside a caption vanished wholesale (297 of 304 chars) — now flattened in document order. Report by [@jumaniac](https://github.com/jumaniac), advice by [@hiSandog](https://github.com/hiSandog).
+- **📝 HWPX nested tables inside captions preserved (#46)**: table content inside a caption vanished wholesale (297 of 304 chars) — now flattened in document order. Report by [@jumaniac](https://github.com/jumaniac), advice by @hiSandog.
 
 ## What's New in v4.0.5
 
@@ -141,7 +141,7 @@ Beyond plain text extraction, kordoc automates the **entire lifecycle of Korean 
 
 ## What's New in v3.18.0
 
-- **🎨 Format profiles**: reproduce a table's **borders, shading, measured column widths, and cell fonts** — not just its merge topology — without shipping the source document. Extract style-only JSON from a reference hwpx with `hwpxToProfile(hwpx)`, then apply it to another document via `markdownToHwpx(md, { profile })` — share and reproduce an organization's formatting without leaking its content (issue #41, schema [`docs/format-profile-spec.md`](docs/format-profile-spec.md)). Schema & samples contributed by [@chiclooc-rgb](https://github.com/chiclooc-rgb) (PR #42).
+- **🎨 Format profiles**: reproduce a table's **borders, shading, measured column widths, and cell fonts** — not just its merge topology — without shipping the source document. Extract style-only JSON from a reference hwpx with `hwpxToProfile(hwpx)`, then apply it to another document via `markdownToHwpx(md, { profile })` — share and reproduce an organization's formatting without leaking its content (issue #41, schema [`docs/format-profile-spec.md`](docs/format-profile-spec.md)). Schema & samples contributed by [@ai-localgov-officer](https://github.com/ai-localgov-officer) (PR #42).
 
 ## What's New in v3.17.0
 
@@ -482,7 +482,7 @@ import type {
 | **HWP 5.x** (Hancom legacy) | OLE2 + CFB | Distribution-copy decryption, corrupted-CFB recovery, footnotes/hyperlinks, 21 control chars, image extraction |
 | **HWP 3.x** (1996–2002) | Single binary | Johab → Unicode, 5,893 Hanja/symbol lookup, nested paragraph extraction |
 | **HWPML 2.x** (XML-based HWP) | XML DOM | HeadingType-based headings, merged cells, DoS guards |
-| **PDF** | pdfjs-dist | Line-based tables, XY-Cut reading order, heading detection, OCR hooks, text-quality signals |
+| **PDF** | pdfjs-dist | Line-based tables, XY-Cut reading order, heading detection, built-in OCR engine, text-quality signals |
 | **XLSX** (Excel) | ZIP + XML DOM | Shared strings, merged cells, multiple sheets, formula display |
 | **XLS** (Excel 97–2003) | OLE2 + BIFF8 | Workbook stream, SST shared strings, cell/sheet extraction |
 | **DOCX** (Word) | ZIP + XML DOM | Style-based headings, numbering, footnotes, image extraction |

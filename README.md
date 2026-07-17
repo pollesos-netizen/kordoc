@@ -29,7 +29,7 @@ npx -y kordoc setup
 1. 사용 중인 AI 클라이언트 번호 선택 (Claude Desktop / Cursor / Claude Code / Windsurf / VS Code / Gemini CLI / Zed / Antigravity — 설치된 건 `[감지됨]` 표시)
 2. 설정 파일 자동 패치 → 클라이언트 재시작
 
-Windows 도 자동으로 `cmd /c npx` 래핑. 수동 JSON 편집 불필요. 재시작하면 11개 문서 도구 (`parse_document`, `parse_table`, `fill_form`, `patch_document`, `generate_document` 등) 활성화.
+Windows 도 자동으로 `cmd /c npx` 래핑. 수동 JSON 편집 불필요. 재시작하면 15개 문서 도구 (`parse_document`, `parse_table`, `fill_form`, `patch_document`, `generate_document` 등) 활성화.
 
 > **CLI 로만 쓸 거면** 설치 없이 `npx kordoc <파일>` 바로 사용. 아래 [CLI](#cli) 섹션 참고.
 
@@ -88,7 +88,7 @@ MCP 등록 대신 스킬(SKILL.md) 형태로 쓰려면:
 
 ## v4.2.0 변경사항
 
-- **👓 내장 텍스트 OCR (PP-OCRv5 korean)**: 스캔/이미지 PDF를 **API 키 없이 로컬 추론**으로 읽습니다 — `parse(buffer, { ocr: true })` / CLI `--ocr` / MCP `parse_document`의 `ocr` 옵션. 모델 ~18MB는 첫 사용 시 자동 다운로드+SHA 검증. 품질 신호가 가리키는 페이지(스캔·글꼴 매핑 깨짐)만 정밀 OCR 하고 정상 페이지는 그대로 두며, OCR 라인 좌표를 표 감지 파이프라인에 태워 **스캔본에서도 표가 복원**됩니다. 한국어 사전 11,945자(완성형 한글 전량), 1페이지 ≈1초.
+- **👓 내장 텍스트 OCR (PP-OCRv5 korean)**: 스캔/이미지 PDF를 **API 키 없이 로컬 추론**으로 읽습니다 — `parse(buffer, { ocr: true })` / CLI `--ocr` / MCP `parse_document`의 `ocr` 옵션. 모델 ~18MB는 첫 사용 시 자동 다운로드+SHA 검증. 품질 신호가 가리키는 페이지(스캔·글꼴 매핑 깨짐)만 정밀 OCR 하고 정상 페이지는 그대로 두며, OCR 라인 좌표를 표 감지 파이프라인에 태워 **스캔본에서도 표가 복원**됩니다. 한국어 사전 11,945자(완성형 한글 11,172자 전량 + 자모·라틴·기호), 1페이지 ≈1초.
 - **🩹 HWP3 구버전 파서 정합 3종**: 탭/필드코드/책갈피의 스트림 소비 결함으로 이후 텍스트가 통째로 오염되던 것과, 로마숫자(Ⅰ~Ⅹ)·원문자(①~⑩)·따옴표·글머리가 증발하던 것을 원저장소(rhwp) 후속 패치 반영으로 수리.
 - **🐛 수식 OCR 페이지 off-by-one 수리**: `--pages` 필터가 한 페이지 밀리고 수식이 이전 페이지에 붙던 잠복 결함. XLSX/XLS `--keep-empty-cols` 배선 누락도 수리.
 
@@ -116,7 +116,7 @@ MCP 등록 대신 스킬(SKILL.md) 형태로 쓰려면:
 ## v4.0.6 변경사항
 
 - **📊 PDF 무괘선 밴드 표 파편화 수정**: 세출예산 사업명세서류의 요약행 밴드에서 수직선이 끊겨 부서명이 유실되던 것을 4중 가드 수직선 브리지로 복원 (광진구 2026 세출예산 637곳 실측).
-- **📝 HWPX 캡션 안 중첩표 보존 (#46)**: 캡션 속 표 내용이 통째로 사라지던 것(304자 중 297자)을 문서 순서 평탄화로 보존. 제보 [@jumaniac](https://github.com/jumaniac), 조언 [@hiSandog](https://github.com/hiSandog).
+- **📝 HWPX 캡션 안 중첩표 보존 (#46)**: 캡션 속 표 내용이 통째로 사라지던 것(304자 중 297자)을 문서 순서 평탄화로 보존. 제보 [@jumaniac](https://github.com/jumaniac), 조언 @hiSandog.
 
 ## v4.0.5 변경사항
 
@@ -156,7 +156,7 @@ MCP 등록 대신 스킬(SKILL.md) 형태로 쓰려면:
 
 ## v3.18.0 변경사항
 
-- **🎨 서식 프로필**: 표의 위상뿐 아니라 **테두리·음영·열 실측폭·셀 글꼴까지** 원본 문서 없이 재현합니다. `hwpxToProfile(hwpx)`로 레퍼런스 서식만 JSON으로 추출하고, `markdownToHwpx(md, { profile })`로 다른 문서에 그 서식을 입힙니다 — 원본 유출 없이 기관 서식만 공유·재현(이슈 #41, 스키마 [`docs/format-profile-spec.md`](docs/format-profile-spec.md)). 스키마·예시 기여: [@chiclooc-rgb](https://github.com/chiclooc-rgb) (PR #42).
+- **🎨 서식 프로필**: 표의 위상뿐 아니라 **테두리·음영·열 실측폭·셀 글꼴까지** 원본 문서 없이 재현합니다. `hwpxToProfile(hwpx)`로 레퍼런스 서식만 JSON으로 추출하고, `markdownToHwpx(md, { profile })`로 다른 문서에 그 서식을 입힙니다 — 원본 유출 없이 기관 서식만 공유·재현(이슈 #41, 스키마 [`docs/format-profile-spec.md`](docs/format-profile-spec.md)). 스키마·예시 기여: [@ai-localgov-officer](https://github.com/ai-localgov-officer) (PR #42).
 
 ## v3.17.0 변경사항
 
@@ -655,7 +655,7 @@ const result = await parse(buffer, { ocr: "force" })  // 전 페이지 강제 OC
 ```
 
 - **API 키·외부 서비스 불필요** — det(선 검출)+rec(CTC 인식) ONNX 를 로컬 CPU 로 추론합니다
-  (PaddlePaddle 공식 변환본, Apache-2.0 / 한국어 사전 11,945자 — 완성형 한글 전량).
+  (PaddlePaddle 공식 변환본, Apache-2.0 / 한국어 사전 11,945자 — 완성형 한글 11,172자 전량 + 자모·라틴·기호).
 - **페이지 단위 정밀 적용** — 텍스트층이 없는 스캔 페이지, ToUnicode 가 깨진 페이지
   (`needsOcr` 신호)만 OCR 하고 정상 페이지의 파싱 결과는 그대로 유지합니다.
 - **표 복원** — OCR 라인 좌표를 기존 블록 파이프라인(xy-cut 읽기 순서 + 클러스터 표

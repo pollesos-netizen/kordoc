@@ -17,6 +17,7 @@ import { shouldDemoteTable, demoteTableToText, detectListBlocks, detectSpecialKo
 
 /**
  * 선 기반 테이블 감지를 우선 시도, 실패 시 기존 휴리스틱 fallback.
+ * @param extraLines 그래픽 ops 밖에서 얻은 선 (래스터 괘선 감지 등, PDF pt·bottom-up)
  */
 export function extractPageBlocksWithLines(
   items: NormItem[],
@@ -24,11 +25,16 @@ export function extractPageBlocksWithLines(
   opList: { fnArray: Uint32Array | number[]; argsArray: unknown[][] },
   pageWidth: number,
   pageHeight: number,
+  extraLines?: { horizontals: LineSegment[]; verticals: LineSegment[] },
 ): IRBlock[] {
   if (items.length === 0) return []
 
   // 1단계: PDF 그래픽 명령에서 선 추출
   let { horizontals, verticals } = extractLines(opList.fnArray, opList.argsArray)
+  if (extraLines) {
+    horizontals = horizontals.concat(extraLines.horizontals)
+    verticals = verticals.concat(extraLines.verticals)
+  }
   ;({ horizontals, verticals } = filterPageBorderLines(horizontals, verticals, pageWidth, pageHeight))
 
   // 1.5단계: 선 전처리 (ODL LinesPreprocessingConsumer 포팅)

@@ -46,6 +46,20 @@ export function isPdfFile(buffer: ArrayBuffer): boolean {
   return b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46
 }
 
+/** 래스터 이미지 (PNG/JPEG/WebP) — OCR 파싱 경로로 라우팅 */
+export function isImageFile(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 12) return false
+  const b = new Uint8Array(buffer, 0, 12)
+  // PNG: \x89PNG
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return true
+  // JPEG: \xFF\xD8\xFF
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true
+  // WebP: RIFF....WEBP
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return true
+  return false
+}
+
 /** HWPML (XML 기반 한컴 문서): <?xml ... <HWPML */
 export function isHwpmlFile(buffer: ArrayBuffer): boolean {
   const bytes = new Uint8Array(buffer, 0, Math.min(512, buffer.byteLength))
@@ -61,6 +75,7 @@ export function detectFormat(buffer: ArrayBuffer): FileType {
   if (isOldHwpFile(buffer)) return "hwp"
   if (isPdfFile(buffer)) return "pdf"
   if (isHwpmlFile(buffer)) return "hwpml"
+  if (isImageFile(buffer)) return "image"
   return "unknown"
 }
 

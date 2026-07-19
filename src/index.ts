@@ -88,8 +88,28 @@ export async function parse(input: string | ArrayBuffer | Buffer, options?: Pars
       return parseHwpml(buffer, opts)
     case "pdf":
       return parsePdf(buffer, opts)
+    case "image":
+      return parseImage(buffer, opts)
     default:
       return { success: false, fileType: "unknown", error: "지원하지 않는 파일 형식입니다.", code: "UNSUPPORTED_FORMAT" }
+  }
+}
+
+/** 이미지(PNG/JPEG/WebP)를 OCR 로 Markdown 변환 — 텍스트층이 없으므로 OCR 상시 적용 */
+export async function parseImage(buffer: ArrayBuffer, options?: ParseOptions): Promise<ParseResult> {
+  try {
+    const { parseImageDocument } = await import("./ocr/image-ocr.js")
+    const { blocks, warnings } = await parseImageDocument(buffer, options)
+    return {
+      success: true,
+      fileType: "image",
+      markdown: blocksToMarkdown(blocks),
+      blocks,
+      warnings: warnings.length ? warnings : undefined,
+      pageCount: 1,
+    }
+  } catch (err) {
+    return { success: false, fileType: "image", error: sanitizeError(err), code: classifyError(err) }
   }
 }
 

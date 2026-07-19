@@ -7,7 +7,7 @@
 
 > *Korea's document hell is second to none. Built by a civil servant who survived seven years in it.*
 
-HWP 3.x/5.x, HWPX, HWPML, PDF, XLS, XLSX, DOCX — parse, compare, analyze, and generate every document format Korean government offices throw at you.
+HWP 3.x/5.x, HWPX, HWPML, PDF, XLS, XLSX, DOCX, images (PNG/JPG/WebP) — parse, compare, analyze, and generate every document format Korean government offices throw at you.
 
 [한국어](./README.md)
 
@@ -58,7 +58,7 @@ The kordoc skill auto-activates on `.hwp`/`.hwpx` mentions and Korean official-d
 
 Beyond plain text extraction, kordoc automates the **entire lifecycle of Korean official documents**.
 
-*   **📄 Any document to Markdown**: Convert `HWP3` (legacy), `HWP` (5.x), `HWPX`, `HWPML`, `PDF`, `XLS`, `XLSX`, and `DOCX` to `Markdown` instantly — the ideal shape for LLMs to read and reason about.
+*   **📄 Any document to Markdown**: Convert `HWP3` (legacy), `HWP` (5.x), `HWPX`, `HWPML`, `PDF`, `XLS`, `XLSX`, `DOCX` — and `PNG`/`JPG`/`WebP` images (automatic OCR) — to `Markdown` instantly — the ideal shape for LLMs to read and reason about.
 *   **📊 Faithful table reconstruction**: Borderless PDF tables and heavily merged HWP tables are analyzed structurally and restored as accurate markdown tables. Old-vs-new clause comparison tables in legislative amendment PDFs survive intact (v3.16.2).
 *   **🔍 Automatic redline (diff)**: Compare two documents and see exactly what changed — including cross-format comparison (HWP vs HWPX).
 *   **📝 Markdown back to HWPX**: Turn AI-written content back into report-form `HWPX`. No more copy-paste drudgery.
@@ -71,6 +71,11 @@ Beyond plain text extraction, kordoc automates the **entire lifecycle of Korean 
 *   **🤖 AI agent integration (MCP)**: Let `Claude`, `Cursor`, and friends call `kordoc` directly to read and produce documents.
 
 ---
+
+## What's New in v4.2.1
+
+- **🖼️ Direct image input (PNG/JPG/WebP)**: convert screenshots and scanned images without wrapping them in a PDF — `kordoc form.png` / `parse(buffer)` / MCP `parse_document`. Images have no text layer, so the built-in OCR is applied automatically (no flag needed; decoding uses the optional dependency `sharp`).
+- **📐 Raster ruling-line detection for scans**: the OCR path now finds horizontal/vertical table rules directly in the page pixels (binarization + run-length, no ML) and feeds them into the line-based table pipeline. Forms with tall merged label cells and multi-line prose cells (Korean government submission forms) are restored as proper tables with rowspan/colspan. The cluster detector remains as the fallback for borderless tables.
 
 ## What's New in v4.2.0
 

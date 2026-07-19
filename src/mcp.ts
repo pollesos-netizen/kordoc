@@ -143,9 +143,9 @@ const server = new McpServer({
 
 server.tool(
   "parse_document",
-  "한국 문서 파일(HWP, HWPX, PDF, XLSX, DOCX)을 마크다운으로 변환합니다. 파일 경로를 입력하면 포맷을 자동 감지하여 텍스트를 추출합니다.",
+  "한국 문서 파일(HWP, HWPX, PDF, XLSX, DOCX)과 이미지(PNG/JPG/WebP)를 마크다운으로 변환합니다. 파일 경로를 입력하면 포맷을 자동 감지하여 텍스트를 추출합니다. 이미지는 OCR(내장 PP-OCRv5)이 자동 적용되고 표 괘선도 복원됩니다.",
   {
-    file_path: z.string().min(1).describe("파싱할 문서 파일의 절대 경로 (HWP, HWPX, PDF, XLSX, DOCX)"),
+    file_path: z.string().min(1).describe("파싱할 문서 파일의 절대 경로 (HWP, HWPX, PDF, XLSX, DOCX, PNG/JPG/WebP)"),
     ocr: z.boolean().optional()
       .describe("스캔/이미지 PDF 텍스트 OCR (내장 PP-OCRv5 korean, 첫 사용 시 ~18MB 자동 다운로드). 텍스트층이 없거나 깨진 페이지만 인식하고 정상 페이지는 그대로 둡니다. parse 결과에 NEEDS_OCR 경고가 있으면 이 옵션으로 재시도하세요"),
   },

@@ -14,7 +14,9 @@
 
 import type { IRBlock, OcrProvider, ParseWarning } from "../types.js"
 import type { NormItem } from "../pdf/text-line.js"
+import type { LineSegment } from "../pdf/line-types.js"
 import { extractPageBlocksWithLines } from "../pdf/page-blocks.js"
+import { detectRulingLines, rulingToPdfLines } from "./ruling-lines.js"
 import { getOcrEngine, type OcrItem } from "./engine.js"
 import { ensureOcrModels } from "./models.js"
 
@@ -102,7 +104,11 @@ async function ocrOnePage(
 
   if (mode === "builtin") {
     const items = await engine!.recognizePage(rgba, rw, rh)
-    return ocrItemsToBlocks(items, pageNo, pdfW, pdfH, rh / pdfH)
+    // 래스터에서 표 괘선 감지 — 스캔본 병합셀 서식도 선 기반 표 파이프라인을 탄다
+    const scale = rh / pdfH
+    const ruling = detectRulingLines(rgba, rw, rh, scale)
+    const extraLines = rulingToPdfLines(ruling, scale, pdfH)
+    return ocrItemsToBlocks(items, pageNo, pdfW, pdfH, scale, extraLines)
   }
 
   // 사용자 프로바이더 — PNG 인코딩 후 호출, 페이지당 paragraph (종전 계약)
@@ -131,15 +137,17 @@ async function ocrOnePage(
 
 /**
  * OcrItem(렌더 픽셀, top-left origin) → NormItem(PDF pt, bottom-up baseline)
- * 으로 환산해 기존 블록 파이프라인에 태운다. 선(괘선) 정보는 없으므로
- * 표 감지는 클러스터 감지기 몫이다.
+ * 으로 환산해 기존 블록 파이프라인에 태운다. 괘선은 그래픽 ops 대신
+ * 래스터 감지 결과(extraLines)로 공급 — 없으면 클러스터 감지기 몫이다.
+ * (이미지 직접 입력 경로 image-ocr.ts 와 공유)
  */
-function ocrItemsToBlocks(
+export function ocrItemsToBlocks(
   items: OcrItem[],
   pageNumber: number,
   pdfW: number,
   pdfH: number,
   scale: number,
+  extraLines?: { horizontals: LineSegment[]; verticals: LineSegment[] },
 ): IRBlock[] {
   const norm: NormItem[] = items.map(it => {
     const h = it.h / scale
@@ -155,7 +163,7 @@ function ocrItemsToBlocks(
       isHidden: false,
     }
   })
-  return extractPageBlocksWithLines(norm, pageNumber, { fnArray: [], argsArray: [] }, pdfW, pdfH)
+  return extractPageBlocksWithLines(norm, pageNumber, { fnArray: [], argsArray: [] }, pdfW, pdfH, extraLines)
 }
 
 async function tryImport<T>(name: string, loader: () => Promise<T>): Promise<T> {

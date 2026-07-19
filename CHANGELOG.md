@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.1] - 2026-07-19
+
+이미지 직접 입력 회차 — PNG/JPG/WebP 를 PDF 래핑 없이 바로 변환하고,
+스캔/이미지의 표 괘선을 픽셀에서 직접 감지해 병합셀 표를 복원한다.
+
+### Added
+
+- **이미지(PNG/JPG/WebP) 직접 입력**: `kordoc 서식.png` / `parse(buffer)` /
+  MCP `parse_document` — 매직바이트 감지(`fileType: "image"`) 후 내장 OCR 을
+  자동 적용 (텍스트층이 없으므로 플래그 불필요). 디코딩은 optional dependency
+  `sharp`, 사용자 OcrProvider 도 종전 계약대로 위임. `src/ocr/image-ocr.ts` 신규.
+- **래스터 괘선 감지 (`src/ocr/ruling-lines.ts`)**: OCR 경로가 그래픽 ops 없이
+  클러스터 감지만 타서 병합 라벨 셀 + 다중줄 서술형 서식(정부 제출 서식류)의
+  표가 무너지던 것을, 페이지 픽셀 이진화+런렝스로 수평/수직 괘선을 직접 찾아
+  선 기반 표 파이프라인(table-grid)에 공급하는 방식으로 해결 — rowspan/colspan
+  이 살아있는 표로 복원. 오탐 방어 3겹: 최소 길이 20pt·두께 상한 2.5pt(굵은
+  글리프 획 차단)·양측 잉크 포위 제외(색상바 내 흰 글자 틈새).
+  `extractPageBlocksWithLines` 에 `extraLines` 옵션 파라미터 추가 (기존 PDF
+  경로 무변경).
+
 ## [4.2.0] - 2026-07-17
 
 내장 텍스트 OCR 회차 — 스캔/이미지 PDF를 API 키 없이 로컬 추론으로 읽는다.

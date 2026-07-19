@@ -31,11 +31,6 @@ An interactive wizard:
 
 Windows gets automatic `cmd /c npx` wrapping. No manual JSON editing. After restart, 15 document tools (`parse_document`, `parse_table`, `fill_form`, `patch_document`, `generate_document`, `place_seal`, …) are live.
 
-> **Codex works too**: pick Codex in the wizard above, or register directly with one line —
-> ```bash
-> codex mcp add kordoc -- npx -y kordoc mcp
-> ```
-
 > **CLI-only usage** needs no install at all: `npx kordoc <file>`. See [CLI](#cli) below.
 
 > **If you hit `MODULE_NOT_FOUND` / `Cannot find module ...\dist\cli.js`**: a broken global install is lingering. Fix with:
@@ -73,7 +68,7 @@ Beyond plain text extraction, kordoc automates the **entire lifecycle of Korean 
 *   **📊 Chart generation (v3.16)**: A markdown ```chart fence (type/cat/series lines) becomes a native Hancom chart (OOXML chartSpace) — 20 types including bar/line/pie/donut/area/scatter/radar, with per-series colors.
 *   **🔴 Stamp/signature placement (v3.16)**: Finds anchor phrases like "(인)" ("seal here") and places a stamp PNG as a floating object in front of text. Tables and pages never grow, so stamping doesn't shift the layout (`kordoc seal`).
 *   **✏️ Form auto-fill**: Feed values into official form templates (applications, reports) and every blank is filled — preserving 100% of the original formatting (font, size, alignment).
-*   **🤖 AI agent integration (MCP)**: Let `Claude`, `Cursor`, and friends call `kordoc` directly to read and produce documents.
+*   **🤖 AI agent integration (MCP)**: Let `Claude Desktop`, `Cursor`, `Codex`, and friends call `kordoc` directly to read and produce documents.
 
 ---
 

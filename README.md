@@ -31,11 +31,6 @@ npx -y kordoc setup
 
 Windows 도 자동으로 `cmd /c npx` 래핑. 수동 JSON 편집 불필요. 재시작하면 15개 문서 도구 (`parse_document`, `parse_table`, `fill_form`, `patch_document`, `generate_document` 등) 활성화.
 
-> **Codex 도 됩니다**: 위 마법사에서 Codex 를 선택하거나, 직접 한 줄 —
-> ```bash
-> codex mcp add kordoc -- npx -y kordoc mcp
-> ```
-
 > **CLI 로만 쓸 거면** 설치 없이 `npx kordoc <파일>` 바로 사용. 아래 [CLI](#cli) 섹션 참고.
 
 > **`MODULE_NOT_FOUND` / `Cannot find module ...\dist\cli.js` 가 뜨면**: 과거에 깨진 글로벌 설치가 남아있는 상태입니다. 아래로 해결:
@@ -87,7 +82,7 @@ MCP 등록 대신 스킬(SKILL.md) 형태로 쓰려면:
 *   **📊 차트 생성 (v3.16)**: 마크다운의 ```chart 펜스(type/cat/계열 라인)가 한컴 네이티브 차트(OOXML chartSpace)로 생성됩니다 — 막대·선·원·도넛·영역·분산·방사형 등 20종, 계열/조각 색 지정 가능.
 *   **🔴 도장/서명 자동 날인 (v3.16)**: "(인)"·"서명 또는 인" 같은 앵커 문구를 찾아 도장 PNG를 글 앞 부유로 배치합니다. 표/페이지를 키우지 않아 날인 후 서식이 밀리지 않습니다 (`kordoc seal`).
 *   **✏️ 양식 자동 채우기**: 공문서 양식 템플릿(신청서, 보고서)에 값을 넣으면 자동으로 빈칸을 채웁니다. 원본 서식(글꼴, 크기, 정렬)을 100% 보존합니다.
-*   **🤖 AI 에이전트 연동 (MCP)**: `Claude`, `Cursor`와 같은 도구에서 직접 `kordoc`을 호출해 문서를 읽고 코딩할 수 있습니다.
+*   **🤖 AI 에이전트 연동 (MCP)**: `Claude Desktop`, `Cursor`, `Codex`와 같은 도구에서 직접 `kordoc`을 호출해 문서를 읽고 코딩할 수 있습니다.
 
 ---
 

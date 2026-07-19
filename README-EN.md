@@ -31,6 +31,11 @@ An interactive wizard:
 
 Windows gets automatic `cmd /c npx` wrapping. No manual JSON editing. After restart, 15 document tools (`parse_document`, `parse_table`, `fill_form`, `patch_document`, `generate_document`, `place_seal`, …) are live.
 
+> **Codex works too**: pick Codex in the wizard above, or register directly with one line —
+> ```bash
+> codex mcp add kordoc -- npx -y kordoc mcp
+> ```
+
 > **CLI-only usage** needs no install at all: `npx kordoc <file>`. See [CLI](#cli) below.
 
 > **If you hit `MODULE_NOT_FOUND` / `Cannot find module ...\dist\cli.js`**: a broken global install is lingering. Fix with:

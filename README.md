@@ -31,6 +31,11 @@ npx -y kordoc setup
 
 Windows 도 자동으로 `cmd /c npx` 래핑. 수동 JSON 편집 불필요. 재시작하면 15개 문서 도구 (`parse_document`, `parse_table`, `fill_form`, `patch_document`, `generate_document` 등) 활성화.
 
+> **Codex 도 됩니다**: 위 마법사에서 Codex 를 선택하거나, 직접 한 줄 —
+> ```bash
+> codex mcp add kordoc -- npx -y kordoc mcp
+> ```
+
 > **CLI 로만 쓸 거면** 설치 없이 `npx kordoc <파일>` 바로 사용. 아래 [CLI](#cli) 섹션 참고.
 
 > **`MODULE_NOT_FOUND` / `Cannot find module ...\dist\cli.js` 가 뜨면**: 과거에 깨진 글로벌 설치가 남아있는 상태입니다. 아래로 해결:

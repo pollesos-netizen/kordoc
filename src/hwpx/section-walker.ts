@@ -171,7 +171,7 @@ function walkSection(
         break
 
       case "p": {
-        const { text: rawText, href, footnote, style } = extractParagraphInfo(el, ctx.styleMap, ctx)
+        const { text: rawText, href, footnote, style, segments } = extractParagraphInfo(el, ctx.styleMap, ctx)
         let text = rawText
         let headingLevel: number | undefined
         // 자동번호/글머리표/개요 접두 재현 (v3.0). 텍스트 유무와 무관하게 호출 —
@@ -181,6 +181,37 @@ function walkSection(
         if (text) {
           if (ph?.prefix) text = ph.prefix + " " + text
           headingLevel = ph?.headingLevel
+        }
+        // 인라인 표 포함 문단 (#49/#50) — 문단 텍스트를 통째로 먼저 push하면 원문에서
+        // 표가 앞설 때 순서가 역전된다. 표 경계 조각을 walkParagraphChildren의 onTbl
+        // 콜백으로 표 직전마다 방출해 문서 순서를 보존한다 (treatAsChar inline 표 배치).
+        // IRCell.text 평탄화는 기존 그대로 문단 전체 선append (하위 호환).
+        if (segments) {
+          const cell = tableCtx?.cell ?? null
+          if (text && cell) cell.text += (cell.text ? "\n" : "") + (footnote ? `${text} (주: ${footnote})` : text)
+          const segs = [...segments]
+          if (ph?.prefix) {
+            const fi = segs.findIndex(s => s)
+            if (fi >= 0) segs[fi] = ph.prefix + " " + segs[fi]
+          }
+          let segIdx = 0
+          let first = true
+          const flush = () => {
+            const s = segs[segIdx++]
+            if (!s) return
+            const block: IRBlock = { type: "paragraph", text: s, pageNumber: ctx.sectionNum }
+            if (first && !cell) {
+              first = false
+              if (style) block.style = style
+              if (href) block.href = href
+              if (footnote) block.footnoteText = footnote
+            }
+            if (cell) (cell.blocks ??= []).push(block)
+            else blocks.push(block)
+          }
+          tableCtx = walkParagraphChildren(el, blocks, tableCtx, tableStack, ctx, depth + 1, flush)
+          while (segIdx < segs.length) flush()
+          break
         }
         if (text) {
           if (tableCtx?.cell) {
@@ -463,11 +494,15 @@ function findTopLevelTbls(el: Node, out: Element[], depth = 0): void {
   }
 }
 
-/** <p> 내부에서 텍스트가 아닌 구조적 자식만 처리 (tbl, pic, shape). tableCtx 반환으로 상태 전파 */
+/**
+ * <p> 내부에서 텍스트가 아닌 구조적 자식만 처리 (tbl, pic, shape). tableCtx 반환으로 상태 전파.
+ * onTbl: 각 표 처리 직전 호출 — 호출자가 표 앞 텍스트 조각을 먼저 방출해
+ * 문서 순서를 보존한다 (#49/#50, extractParagraphInfo의 \x1E 마커와 1:1 대응)
+ */
 function walkParagraphChildren(
   node: Node, blocks: IRBlock[],
   tableCtx: TableState | null, tableStack: TableState[],
-  ctx: WalkCtx, depth: number = 0
+  ctx: WalkCtx, depth: number = 0, onTbl?: () => void
 ): TableState | null {
   if (depth > MAX_XML_DEPTH) return tableCtx
   const children = node.childNodes
@@ -483,6 +518,9 @@ function walkParagraphChildren(
       const localTag = tag.replace(/^[^:]+:/, "")
 
       if (localTag === "tbl") {
+        // 표 앞 텍스트 조각 선방출 — 문서 순서 보존 (#49/#50).
+        // extractParagraphInfo의 \x1E 마커와 동일 조건(inline 표만)이어야 인덱스 정합
+        if (onTbl && isInlineTbl(el)) onTbl()
         // kordoc 왕복 채널 (v4.0.5 P2) — walkSection tbl 케이스와 동일 판독.
         // 최상위(셀 밖) 표에서만: heading 복원 또는 파생물(목차·제목반복) 스킵
         if (!tableCtx) {
@@ -541,6 +579,14 @@ function walkParagraphChildren(
   return tableCtx
 }
 
+/**
+ * 글자취급(treatAsChar) 인라인 표 여부 — <hp:pos treatAsChar="1"> (#49/#50).
+ * inline 표만 같은 줄 텍스트와 문서 순서로 읽는다 (reflow 개체 흐름 모델과 동일 구분)
+ */
+function isInlineTbl(tbl: Element): boolean {
+  return findChildByLocalName(tbl, "pos")?.getAttribute("treatAsChar") === "1"
+}
+
 /** 자손에서 특정 태그명의 첫 번째 요소 탐색 (최대 깊이 5) */
 function findDescendant(node: Node, targetTag: string, depth = 0): Element | null {
   if (depth > 5) return null
@@ -595,6 +641,12 @@ interface ParagraphInfo {
   href?: string
   footnote?: string
   style?: InlineStyle
+  /**
+   * 인라인 표 경계로 분할된 텍스트 조각 (#49/#50) — 문단 안에 표가 있을 때만 존재.
+   * segments[i]는 i번째 표 앞의 텍스트, 마지막 조각은 마지막 표 뒤의 텍스트.
+   * text는 기존과 동일한 전체 평탄화본 (하위 호환).
+   */
+  segments?: string[]
 }
 
 /** fieldBegin이 HYPERLINK면 stringParam name="Path"에서 URL 추출 (살균 포함) */
@@ -738,7 +790,8 @@ function extractParagraphInfo(para: Element, styleMap?: HwpxStyleMap, ctx?: Walk
             ctx.warnings?.push({ page: ctx.sectionNum, message: "변경추적 삭제 텍스트 출력 제외", code: "HIDDEN_TEXT_FILTERED" })
           }
         } else {
-          text += t
+          // \x1E는 인라인 표 경계 마커로 예약 — 원문 혼입 방지 (#49/#50)
+          text += t.replace(/\x1E/g, "")
         }
         continue
       }
@@ -762,7 +815,12 @@ function extractParagraphInfo(para: Element, styleMap?: HwpxStyleMap, ctx?: Walk
           break
         case "lineBreak": text += "\n"; break // 강제 줄바꿈 — ref 추출기·소스맵 스캐너와 동일 모델
         case "fwSpace": case "hwSpace": text += " "; break
-        case "tbl": break // 테이블은 walkSection에서 처리
+        // 테이블 자체는 walkSection에서 처리 — 글자취급(inline) 표만 경계 마커를 남겨
+        // 표 앞뒤 텍스트를 문서 순서대로 분할 방출할 수 있게 한다 (#49/#50).
+        // float·페이지 앵커 표는 텍스트 흐름 불참(reflow 모델 정합) — 종전대로 텍스트 뒤 방출
+        case "tbl":
+          if (isInlineTbl(child)) text += "\x1E"
+          break
 
         // 하이퍼링크
         case "hyperlink": {
@@ -847,7 +905,7 @@ function extractParagraphInfo(para: Element, styleMap?: HwpxStyleMap, ctx?: Walk
     for (const r of closed) {
       if (applied.some(([s, e]) => r.start < e && r.end! > s)) continue
       const anchor = text.slice(r.start, r.end!)
-      if (!anchor.trim() || /[\n\x1F\[\]]/.test(anchor)) continue
+      if (!anchor.trim() || /[\n\x1F\x1E\[\]]/.test(anchor)) continue
       text = text.slice(0, r.start) + `[${anchor}](${r.url})` + text.slice(r.end!)
       applied.push([r.start, r.end!])
     }
@@ -858,17 +916,27 @@ function extractParagraphInfo(para: Element, styleMap?: HwpxStyleMap, ctx?: Walk
   const leaderIdx = text.indexOf("\x1F")
   if (leaderIdx >= 0) text = text.substring(0, leaderIdx)
 
-  let cleanText = text.replace(/[ \t]+/g, " ").trim()
+  const cleanParaText = (raw: string): string => {
+    let t = raw.replace(/[ \t]+/g, " ").trim()
+    // 한글 이미지 OLE 대체 텍스트 필터링 ("그림입니다. 원본 그림의 이름: ...")
+    if (/^그림입니다\.?\s*원본\s*그림의\s*(이름|크기)/.test(t)) t = ""
+    // 멀티라인으로 삽입된 OLE 대체 텍스트도 제거
+    t = t.replace(/그림입니다\.?\s*원본\s*그림의\s*(이름|크기)[^\n]*(\n[^\n]*원본\s*그림의\s*(이름|크기)[^\n]*)*/g, "").trim()
+    // HWP 도형/개체 대체텍스트 제거 ("사각형입니다.", "개체 입니다." 등)
+    // 행 전체 일치(^…$m)로 한정 — 무앵커면 "붙임 문서는 표 입니다." 같은 본문 중간을 오삭제한다.
+    // NOTE: "수식" 은 제거 목록에서 빠져있음 — <hp:equation> 파싱으로 LaTeX 본문이 이미
+    // `$...$` 형태로 삽입되기 때문에 여기서 지울 alt-text 는 존재하지 않는다.
+    return t.replace(/^(?:모서리가 둥근 |둥근 )?(?:사각형|직사각형|정사각형|원|타원|삼각형|선|직선|곡선|화살표|오각형|육각형|팔각형|별|십자|구름|마름모|도넛|평행사변형|사다리꼴|개체|그리기\s?개체|묶음\s?개체|글상자|표|그림|OLE\s?개체)\s?입니다\.?$/gm, "").trim()
+  }
 
-  // 한글 이미지 OLE 대체 텍스트 필터링 ("그림입니다. 원본 그림의 이름: ...")
-  if (/^그림입니다\.?\s*원본\s*그림의\s*(이름|크기)/.test(cleanText)) cleanText = ""
-  // 멀티라인으로 삽입된 OLE 대체 텍스트도 제거
-  cleanText = cleanText.replace(/그림입니다\.?\s*원본\s*그림의\s*(이름|크기)[^\n]*(\n[^\n]*원본\s*그림의\s*(이름|크기)[^\n]*)*/g, "").trim()
-  // HWP 도형/개체 대체텍스트 제거 ("사각형입니다.", "개체 입니다." 등)
-  // 행 전체 일치(^…$m)로 한정 — 무앵커면 "붙임 문서는 표 입니다." 같은 본문 중간을 오삭제한다.
-  // NOTE: "수식" 은 제거 목록에서 빠져있음 — <hp:equation> 파싱으로 LaTeX 본문이 이미
-  // `$...$` 형태로 삽입되기 때문에 여기서 지울 alt-text 는 존재하지 않는다.
-  cleanText = cleanText.replace(/^(?:모서리가 둥근 |둥근 )?(?:사각형|직사각형|정사각형|원|타원|삼각형|선|직선|곡선|화살표|오각형|육각형|팔각형|별|십자|구름|마름모|도넛|평행사변형|사다리꼴|개체|그리기\s?개체|묶음\s?개체|글상자|표|그림|OLE\s?개체)\s?입니다\.?$/gm, "").trim()
+  // 인라인 표 경계(\x1E)로 분할 — 표 전후 텍스트를 문서 순서대로 방출 (#49/#50).
+  // text는 마커 제거 후 기존과 동일 파이프라인 (표 없는 문단은 바이트 동일)
+  let segments: string[] | undefined
+  if (text.includes("\x1E")) {
+    segments = text.split("\x1E").map(cleanParaText)
+    text = text.replace(/\x1E/g, "")
+  }
+  const cleanText = cleanParaText(text)
 
   // 스타일 정보 조회
   let style: InlineStyle | undefined
@@ -884,7 +952,7 @@ function extractParagraphInfo(para: Element, styleMap?: HwpxStyleMap, ctx?: Walk
     }
   }
 
-  return { text: cleanText, href, footnote, style }
+  return { text: cleanText, href, footnote, style, segments }
 }
 
 /** kordoc 생성 default 레이아웃의 인라인 코드 charPr id (gen-ids CHAR_CODE와 동기) */

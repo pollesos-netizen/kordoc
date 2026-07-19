@@ -244,7 +244,14 @@ export async function extractRef(buffer) {
       for (const ch of node.children) {
         if (typeof ch === "string") { addText(ch); continue }
         const t = ch.tag
-        if (t === "tbl") { structural.push({ type: "tbl", node: ch }); continue }
+        if (t === "tbl") {
+          // 글자취급(inline) 표는 경계 마커 — 파서와 동일하게 표 전후 텍스트를
+          // 문서 순서 유닛으로 분할한다 (#49/#50). float 표는 종전대로 텍스트 뒤
+          const inline = ch.children.some(c => typeof c !== "string" && c.tag === "pos" && c.attrs?.treataschar === "1")
+          structural.push({ type: "tbl", node: ch, inline })
+          if (inline && !leaderCut) text += "\x1E"
+          continue
+        }
         if (t === "drawtext") { structural.push({ type: "drawtext", node: ch }); continue }
         if (SHAPE_TAGS.has(t)) { structural.push({ type: "shape", node: ch }); continue }
         if (t === "tab") {
@@ -291,7 +298,11 @@ export async function extractRef(buffer) {
     }
 
     walkText(p)
-    return { text: applyAltTextPolicy(text, counters), structural }
+    // 인라인 표 경계 분할본(segs) — walkBody만 소비. counters는 전체 텍스트 1회만 반영
+    const segs = text.includes("\x1E")
+      ? text.split("\x1E").map(s => applyAltTextPolicy(s, null))
+      : null
+    return { text: applyAltTextPolicy(text.replace(/\x1E/g, ""), counters), segs, structural }
   }
 
   // ── 구조 자식 처리 (DOM 순서 = 파서 블록 순서) ──
@@ -469,9 +480,20 @@ export async function extractRef(buffer) {
     for (const ch of node.children) {
       if (typeof ch === "string") continue
       if (ch.tag === "p" || ch.tag === "para") {
-        const { text, structural } = collectPara(ch)
-        pushUnit("body", text)
-        processStructural(structural, 0)
+        const { text, segs, structural } = collectPara(ch)
+        if (segs) {
+          // 인라인 표 포함 문단 — 파서 walkSection 분할 방출과 동일 모델 (#49/#50):
+          // 각 인라인 표 직전에 해당 텍스트 조각, 잔여 조각은 뒤에. float·도형은 DOM 위치
+          let si = 0
+          for (const s of structural) {
+            if (s.type === "tbl" && s.inline) pushUnit("body", segs[si++] ?? "")
+            processStructural([s], 0)
+          }
+          while (si < segs.length) pushUnit("body", segs[si++] ?? "")
+        } else {
+          pushUnit("body", text)
+          processStructural(structural, 0)
+        }
       } else if (ch.tag === "tbl") {
         processTable(ch, 0)
       } else if (EXCLUDE_SUBTREES.has(ch.tag)) {

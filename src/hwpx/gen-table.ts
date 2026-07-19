@@ -9,7 +9,7 @@
  * 최우선 — 프로필 미매칭 셀만 기본/공문서 문법으로 채운다.
  */
 
-import { parseHtmlTable, htmlCellInnerToLines, extractTopLevelTables, type HtmlRowInfo } from "../roundtrip/markdown-units.js"
+import { parseHtmlTable, htmlCellInnerToLines, splitCellByTopLevelTables, type HtmlRowInfo } from "../roundtrip/markdown-units.js"
 import { MAX_COLS, MAX_ROWS } from "../table/builder.js"
 import { clampSpan } from "./parser-shared.js"
 import { CHAR_NORMAL, CHAR_BOLD, CHAR_TABLE_HEADER, PARA_NORMAL, escapeXml, type ResolvedTheme } from "./gen-ids.js"
@@ -452,23 +452,26 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
   const meta = placed.map((cell, i) => {
     const rowSpan = Math.min(cell.rowSpan, rowCnt - cell.r)
     const lines = cellLines[i]
-    // 중첩표 — 셀폭(마진 제외)에 맞춰 1회 재귀 생성, Pass 2에서 재사용(재호출 방지)
+    // 중첩표 — 셀폭(마진 제외)에 맞춰 1회 재귀 생성, Pass 2에서 재사용(재호출 방지).
+    // texts[i]는 i번째 표 앞 텍스트 — Pass 2가 원문 배치 순서대로 방출한다 (#49).
+    // 생성 실패 표는 null로 자리를 지켜 텍스트 조각과의 인덱스 정합 유지
     let nestedH = 0
-    const nestedXmls: string[] = []
-    for (const nested of extractTopLevelTables(cell.inner)) {
+    const { texts: segTexts, tables: nestedTables } = splitCellByTopLevelTables(cell.inner)
+    const nestedXmls: (string | null)[] = nestedTables.map((nested) => {
       // 중첩표 폭 = 부모 셀폭 − 여유(1020), 가독 하한 4000 — 단 하한이 부모 셀폭을
       // 넘으면 셀 경계를 침범하므로 상한(셀폭 − 마진 282)에 양보한다 (v4.0.5 P1-3)
       const sw = spanW(cell)
       const nestedW = Math.max(Math.min(Math.max(sw - 1020, 4000), sw - 282), 500)
       const nestedXml = generateHtmlTableXml(nested, theme, nestedW, style ? { ...style, totalWidth: nestedW } : null)
       if (nestedXml) {
-        nestedXmls.push(nestedXml)
         // 재귀가 확정한 실높이(hp:sz — 셀 성장·줄바꿈 반영)를 재사용. 행수×cellH 추정은
         // 중첩 셀이 접히면(긴 텍스트 wrap) 과소해 호스트 행이 중첩표를 못 담았다 (v4.0.4)
         const szH = nestedXml.match(/<hp:sz [^>]*height="(\d+)"/)?.[1]
         nestedH += (szH ? Number(szH) : ((nested.match(/<tr[\s>]/gi) ?? []).length) * cellH) + 300
       }
-    }
+      return nestedXml
+    })
+    const segLines = segTexts.map((t) => htmlCellInnerToLines(t).lines)
     // 셀폭 기준 줄바꿈 수 — <br> 분리 각 줄이 폭을 넘으면 추가로 접힌다
     const usable = Math.max(spanW(cell) - CELL_PAD, 1000)
     let wrapLines = 0
@@ -478,12 +481,12 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
     const cellHeight = Math.max(prof?.cellH.get(`${cell.r},${cell.c}`) ?? 0, contentH)
     const perRow = Math.ceil(cellHeight / rowSpan)
     for (let r = cell.r; r < cell.r + rowSpan; r++) tableRowHeights[r] = Math.max(tableRowHeights[r], perRow)
-    return { cell, rowSpan, lines, nestedXmls, imgSrcs: cellParsed[i].imgSrcs }
+    return { cell, rowSpan, lines, nestedXmls, segLines, imgSrcs: cellParsed[i].imgSrcs }
   })
 
   // Pass 2 — 확정된 행높이로 셀 XML 생성. 셀 높이 = 점유 행들의 확정 높이 합이라
   //   같은 행 셀들의 높이가 일치하고 열별 합이 hp:sz(tableH)와 정확히 맞는다.
-  const tcXmls = meta.map(({ cell, rowSpan, lines, nestedXmls, imgSrcs }) => {
+  const tcXmls = meta.map(({ cell, rowSpan, nestedXmls, segLines, imgSrcs }) => {
     const k = `${cell.r},${cell.c}`
     const isHeader = cell.isHeader
     const baseCharPr = style ? style.charPr : CHAR_NORMAL
@@ -497,7 +500,7 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
     // 셀 이미지 — <img src>(imgSrcs)와 라인 내 마크다운 참조를 placeholder pic으로 (v4.0.5)
     const picUrls: string[] = images ? [...imgSrcs] : []
     const paras: string[] = []
-    for (const line of lines) {
+    const pushTextLine = (line: string) => {
       let text = unescapeHtml(line)
       if (images) {
         const { text: rest, urls } = splitImageRefs(text)
@@ -508,14 +511,20 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
         paras.push(`<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}"><hp:t>${escapeXml(text)}</hp:t></hp:run></hp:p>`)
       }
     }
+    // 텍스트 조각·중첩표를 원문 배치 순서대로 방출 (#49) — 종전 텍스트 전량 선방출은
+    // 표가 앞선 원문에서 순서를 역전시켰다. segLines[i] = i번째 중첩표 앞 텍스트
+    segLines.forEach((seg, si) => {
+      for (const line of seg) pushTextLine(line)
+      const nestedXml = nestedXmls[si]
+      if (nestedXml) {
+        paras.push(`<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${nestedXml}</hp:run></hp:p>`)
+      }
+    })
     if (images && picUrls.length > 0) {
       const pics = picUrls.map((u) => { const part = images.take(u); return part ? images.inlinePicXml(part) : null }).filter(Boolean)
       if (pics.length > 0) {
         paras.push(`<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}">${pics.join("")}</hp:run></hp:p>`)
       }
-    }
-    for (const nestedXml of nestedXmls) {
-      paras.push(`<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${nestedXml}</hp:run></hp:p>`)
     }
     if (paras.length === 0) {
       paras.push(`<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}"><hp:t></hp:t></hp:run></hp:p>`)

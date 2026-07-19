@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.3] - 2026-07-19
+
+인라인 표 순서 보존 회차 — 한 문단·한 셀 안에서 글자취급(treatAsChar) 표와 텍스트가
+번갈아 놓일 때 순서가 역전되던 결함 2건(#49·#50, @jumaniac 제보) 수정.
+
+### Fixed
+
+- **최상위 `blocks` 문서 순서 (#50)**: 한 문단 안에서 인라인 표 뒤에 오는 텍스트가
+  표보다 앞 블록으로 나오던 역전 수정. `walkSection`이 문단 텍스트를 통째로 먼저
+  push하던 것을, 표 경계 마커(`\x1E`)로 분할해 표 직전마다 해당 조각을 방출하도록
+  변경. float·페이지 앵커 표는 텍스트 흐름 불참(reflow 개체 흐름 모델과 동일 구분) —
+  종전대로 텍스트 뒤에 방출한다. `ParseSuccess.blocks`의 문서 순서 보존을 타입
+  계약으로 명문화.
+- **`IRCell.blocks` 셀 안 교대 배치 (#49)**: 셀 안에서 `[표] 텍스트 [표] 텍스트`가
+  하나의 문단으로 병합되어 맨 앞으로 이동하던 것 수정 — 서식 기간 입력란
+  (`[날짜] 부터 [날짜] 까지`)의 시작/끝 구분이 살아난다. 생성기(`generateHtmlTableXml`)도
+  셀 텍스트 전량 선방출을 원문 배치 순서 방출로 바꿔 라운드트립 대칭 확보. 평탄화
+  `IRCell.text`도 문서 순서를 따른다.
+- **벤치 순서 GT 정합**: 자기참조 XML GT(`hwpx-ref`)의 순서 모델을 파서와 동일한
+  인라인 분할 방출로 갱신 — 코퍼스 347문서 orderAvg 1.0 (구 모델 대비 결재문서류
+  5건의 실제 읽기 순서 오류가 드러나 함께 해소).
+
 ## [4.2.2] - 2026-07-19
 
 rhwp 최신판 정합 회차 — 원저장소(edwardkim/rhwp)의 1만 건 실문서 서베이·실측 패치에서

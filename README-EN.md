@@ -72,6 +72,10 @@ Beyond plain text extraction, kordoc automates the **entire lifecycle of Korean 
 
 ---
 
+## What's New in v4.2.3
+
+- **Inline table/text order preservation (#49·#50)**: when an inline (treatAsChar) table and text alternate within one paragraph or one cell (date-range form fields like `[date] from [date] to`), text was pulled ahead of the tables, reversing the reading order. Both top-level `blocks` and `IRCell.blocks` now follow document order, and the generator emits cells in the same order for symmetric roundtrips. Floating/page-anchored tables stay out of the text flow as before. (reported by @jumaniac)
+
 ## What's New in v4.2.2
 
 - **~~Strikethrough~~ extraction (HWP5·HWPX)**: deletion marks in legislative amendment documents now survive as markdown `~~strikethrough~~`. Detection uses a strike-**shape** whitelist — Hancom stores the strikethrough bits as a default even on non-struck text (measured in upstream rhwp), so only real line kinds count and unknown values fail closed. HWPX supports partial-run strikes; HWP5 works at paragraph level.

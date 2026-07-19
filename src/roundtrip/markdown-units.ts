@@ -491,6 +491,24 @@ export function htmlCellInnerToLines(inner: string): { lines: string[]; hadNonTe
   return { lines, hadNonText, imgSrcs }
 }
 
+/**
+ * 셀 inner를 최상위 표 경계로 분할 — texts[i]는 i번째 표 앞 텍스트, 마지막은 뒤 텍스트
+ * (texts.length === tables.length + 1). 표·텍스트가 번갈아 놓인 셀의 원문 배치 순서를
+ * 생성기가 보존할 수 있게 한다 (#49 — 표 뒤 텍스트가 표 앞으로 역전되던 것 수정)
+ */
+export function splitCellByTopLevelTables(html: string): { texts: string[]; tables: string[] } {
+  const tables = extractTopLevelTables(html)
+  const texts: string[] = []
+  let rest = html
+  for (const t of tables) {
+    const i = rest.indexOf(t)
+    texts.push(rest.slice(0, i))
+    rest = rest.slice(i + t.length)
+  }
+  texts.push(rest)
+  return { texts, tables }
+}
+
 /** 셀 inner의 최상위 <table>...</table> 부분문자열들 (문서 순서, 짝 맞는 닫힘까지) */
 export function extractTopLevelTables(html: string): string[] {
   const result: string[] = []

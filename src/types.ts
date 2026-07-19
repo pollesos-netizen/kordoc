@@ -110,7 +110,8 @@ export interface IRCell {
   rowSpan: number
   /**
    * 셀 내부 블록 콘텐츠 — v3.0.
-   * 중첩 표·이미지·다중 문단을 구조 그대로 보존한다.
+   * 중첩 표·이미지·다중 문단을 구조 그대로, 문서(원문) 순서대로 보존한다.
+   * 표와 텍스트가 한 줄에 번갈아 놓인 셀도 배치 순서를 따른다 (v4.2.3, #49).
    * blocks가 있으면 text는 blocks의 평탄화 텍스트(하위 호환용)다.
    */
   blocks?: IRBlock[]
@@ -274,7 +275,11 @@ export interface ParseSuccess extends ParseResultBase {
   success: true
   /** 추출된 마크다운 텍스트 */
   markdown: string
-  /** 중간 표현 블록 (구조화된 데이터 접근용) */
+  /**
+   * 중간 표현 블록 (구조화된 데이터 접근용).
+   * 블록은 문서(원문) 읽기 순서를 따른다 — 한 문단 안에 글자취급(treatAsChar)
+   * 표와 텍스트가 섞여 있어도 배치 순서대로 방출된다 (v4.2.3, #50).
+   */
   blocks: IRBlock[]
   /** 문서 메타데이터 */
   metadata?: DocumentMetadata

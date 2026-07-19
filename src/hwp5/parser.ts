@@ -702,7 +702,12 @@ function parseParagraph(records: HwpRecord[], start: number, end: number, ctx: H
     if (headingLevel > 0) block.level = headingLevel
     if (ctx.docInfo && charShapeIds.length > 0) {
       const style = resolveCharStyle(charShapeIds, ctx.docInfo)
-      if (style) block.style = style
+      if (style) {
+        block.style = style
+        // 취소선 문단(법령 개정문 삭제 조문 등)은 ~~…~~ 로 방출 — 대표(최빈) 스타일
+        // 기준이라 문단 전체가 그어진 경우만 잡는다 (부분 취소선은 미지원)
+        if (style.strike) block.text = headMarker ? `${headMarker} ~~${trimmed}~~` : `~~${trimmed}~~`
+      }
     }
     if (footnotes.length > 0) block.footnoteText = footnotes.join("; ")
     blocks.push(block)
@@ -1206,6 +1211,19 @@ function resolveCharStyle(charShapeIds: number[], docInfo: HwpDocInfo): InlineSt
   if (cs.fontSize > 0) style.fontSize = cs.fontSize / 10  // 0.1pt → pt
   if (cs.attrFlags & 0x01) style.italic = true
   if (cs.attrFlags & 0x02) style.bold = true
+  if (hasRealStrike(cs.attrFlags)) style.strike = true
 
-  return (style.fontSize || style.bold || style.italic) ? style : undefined
+  return (style.fontSize || style.bold || style.italic || style.strike) ? style : undefined
+}
+
+/**
+ * CharShape attr 의 취소선 판정 — 비트(18-20)만 믿으면 안 된다: 한컴은 취소선 없는
+ * 문자에도 1을 기본값으로 넣는다. 진짜 판별자는 취소선 모양(bit 26-29)이며, 취소선이
+ * 없으면 표 27 선 종류(0~12)가 아닌 placeholder(15 등)가 들어온다. 알 수 없는 값은
+ * fail-closed 로 no-strike (rhwp 0a967e0d, HWPX isRealStrikeShape 와 같은 원리).
+ */
+export function hasRealStrike(attrFlags: number): boolean {
+  const strikeBits = (attrFlags >> 18) & 0x07
+  const shapeId = (attrFlags >> 26) & 0x0f
+  return strikeBits !== 0 && shapeId <= 12
 }

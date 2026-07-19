@@ -138,9 +138,10 @@ describe("precheckZipSize", () => {
 
 describe("precheckZipSize — parseHwpxDocument 간접 검증", () => {
   it("CD 선언 비압축 크기 초과 → ZIP bomb 에러", async () => {
-    // CD에 비압축 크기를 200MB로 선언한 ZIP 생성
+    // CD에 비압축 크기를 300MB로 선언한 ZIP 생성 (한도 256MB 초과 — 종전 200MB는
+    // rhwp 실문서 서베이 반영 상향으로 정상 범위가 됐다)
     const zip = makeMinimalZip([
-      { name: "section0.xml", uncompressedSize: 200 * 1024 * 1024 },
+      { name: "section0.xml", uncompressedSize: 300 * 1024 * 1024 },
     ])
     await assert.rejects(
       () => parseHwpxDocument(zip),

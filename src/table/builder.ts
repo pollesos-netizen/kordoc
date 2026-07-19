@@ -338,7 +338,8 @@ function spansToMarkdown(spans: IRSpan[]): string {
   let out = ""
   for (const s of spans) {
     if (!s.text) continue
-    const marker = s.code ? "`" : s.bold && s.italic ? "***" : s.bold ? "**" : s.italic ? "*" : ""
+    let marker = s.code ? "`" : s.bold && s.italic ? "***" : s.bold ? "**" : s.italic ? "*" : ""
+    if (s.strike && !s.code) marker = `~~${marker}` // 닫힘은 아래 close 에서 역순 조합 (~~**…**~~)
     if (!marker) {
       out += escapeGfm(s.text)
       continue
@@ -349,7 +350,8 @@ function spansToMarkdown(spans: IRSpan[]): string {
       out += s.text
       continue
     }
-    out += m[1] + marker + (s.code ? core : escapeGfm(core)) + marker + m[3]
+    const close = [...marker].reverse().join("")
+    out += m[1] + marker + (s.code ? core : escapeGfm(core)) + close + m[3]
   }
   return out
 }

@@ -15,7 +15,25 @@ export interface HwpxCharProperty {
   fontSize?: number  // 단위: pt (hwpx는 centi-pt → /100)
   bold?: boolean
   italic?: boolean
+  strike?: boolean
   fontName?: string
+}
+
+/**
+ * 취소선 모양이 실제 선 종류(OWPML LineSym2, 표 27)인지 whitelist 판정.
+ * 한컴 익스포터가 취소선 없는 charPr 에도 `<hh:strikeout shape="3D"/>` 류
+ * placeholder 를 넣으므로, 존재 여부·비트만 믿으면 본문 전체가 취소선이 된다
+ * (rhwp #154/0a967e0d 실측). 알 수 없는 값은 fail-closed 로 no-strike.
+ */
+export function isRealStrikeShape(shape: string): boolean {
+  switch (shape) {
+    case "SOLID": case "DASH": case "DOT": case "DASH_DOT": case "DASH_DOT_DOT":
+    case "LONG_DASH": case "CIRCLE": case "DOUBLE_SLIM": case "SLIM_THICK":
+    case "THICK_SLIM": case "SLIM_THICK_SLIM": case "WAVE": case "DOUBLE_WAVE":
+      return true
+    default:
+      return false
+  }
 }
 
 /** hh:numbering > hh:paraHead 한 수준의 정의 */
@@ -124,6 +142,11 @@ function parseCharProperties(doc: Document, map: Map<string, HwpxCharProperty>):
         const localTag = (k.tagName || "").replace(/^[^:]+:/, "")
         if (localTag === "bold") prop.bold = true
         else if (localTag === "italic") prop.italic = true
+        else if (localTag === "strikeout") {
+          // shape whitelist — placeholder("3D"/"NONE" 등)는 취소선 아님
+          const shape = k.getAttribute("shape") || ""
+          if (isRealStrikeShape(shape)) prop.strike = true
+        }
       }
 
       // 하위 요소에서 fontface 탐색

@@ -9,7 +9,9 @@ import type { CellContext, IRBlock, ParseWarning } from "../types.js"
 // WalkCtx.styleMap 타입 참조 — 타입 전용이라 styles.ts와의 순환은 컴파일 시 소거됨
 import type { HwpxStyleMap } from "./styles.js"
 
-export const MAX_DECOMPRESS_SIZE = 100 * 1024 * 1024
+// 256MB — rhwp 1만 건 실문서 서베이에서 section1.xml 단독 75.2MB(압축비 35:1) 정상
+// 문서가 확인됨 (rhwp #1917). 종전 100MB 총합 컷은 대형 실문서를 ZIP bomb 으로 오인 거부.
+export const MAX_DECOMPRESS_SIZE = 256 * 1024 * 1024
 /** 손상 ZIP 복구 시 최대 엔트리 수 */
 export const MAX_ZIP_ENTRIES = 500
 

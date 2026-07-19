@@ -20,6 +20,7 @@ export interface IRSpan {
   text: string
   bold?: boolean
   italic?: boolean
+  strike?: boolean
   code?: boolean
 }
 
@@ -87,6 +88,8 @@ export interface BoundingBox {
 export interface InlineStyle {
   bold?: boolean
   italic?: boolean
+  /** 취소선 — 법령 개정문 등의 삭제 표시. 판정은 취소선 모양 whitelist (비트만 믿으면 오탐) */
+  strike?: boolean
   fontSize?: number
   fontName?: string
 }

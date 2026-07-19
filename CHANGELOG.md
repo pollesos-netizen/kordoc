@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+rhwp 최신판 정합 회차 — 원저장소(edwardkim/rhwp)의 1만 건 실문서 서베이·실측 패치에서
+파서 스코프에 해당하는 2건을 이식.
+
+### Added
+
+- **취소선 추출 (HWP5·HWPX)**: 법령 개정문 등의 삭제 표시를 `~~취소선~~` 마크다운으로
+  방출. 판정은 취소선 **모양** whitelist — 한컴은 취소선 없는 문자에도 취소선 비트를
+  기본값 1로 저장하므로 비트만 믿으면 본문 전체가 취소선이 된다 (rhwp 0a967e0d/#154
+  실측). HWP5 는 shape id(bit 26-29) ≤12, HWPX 는 `<hh:strikeout shape>` 의 OWPML
+  LineSym2 13종만 인정, 미지 값은 fail-closed. HWPX 는 run-span 채널로 부분 취소선까지,
+  HWP5 는 대표(최빈) 스타일 기준 문단 단위. (PDF 경로의 취소선 감지는 종전부터 지원)
+
+### Changed
+
+- **ZIP 해제 한도 100→256MB**: rhwp 서베이에서 `section1.xml` 단독 75.2MB(압축비
+  35:1)인 정상 문서가 실재 확인됨 (rhwp #1917) — 종전 100MB 총합 컷이 대형 실문서를
+  ZIP bomb 으로 오인 거부하던 것을 상향.
+
 ## [4.2.1] - 2026-07-19
 
 이미지 직접 입력 회차 — PNG/JPG/WebP 를 PDF 래핑 없이 바로 변환하고,

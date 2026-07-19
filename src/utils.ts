@@ -77,7 +77,7 @@ export function compareSectionPaths(a: string, b: string): number {
  */
 export function precheckZipSize(
   buffer: ArrayBuffer,
-  maxUncompressedSize = 100 * 1024 * 1024,
+  maxUncompressedSize = 256 * 1024 * 1024, // parser-shared MAX_DECOMPRESS_SIZE 와 동기
   maxEntries = 500,
 ): { totalUncompressed: number; entryCount: number } {
   try {
